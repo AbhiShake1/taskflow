@@ -1,9 +1,14 @@
 {
   "name": "taskflow",
   "version": "0.1.0",
-  "description": "YAML-driven orchestration of parallel/sequential AI coding-agent sessions",
+  "description": "Fluent-authored orchestration of parallel/sequential AI coding-agent sessions",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./api/index.ts",
+    "./core": "./core/index.ts",
+    "./tui": "./tui/index.tsx"
+  },
   "scripts": {
     "build": "tsx factory/cli.ts",
     "run": "tsx runner/index.ts",
