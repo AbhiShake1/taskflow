@@ -91,7 +91,7 @@ describe.skipIf(!RUN_REAL || !HAS_AUTH)('real multi-stage pipeline', () => {
     for (const l of manifest.leaves) {
       expect(l.status, `leaf ${l.id} not done`).toBe('done');
     }
-    expect(manifest.stages).toEqual(['pipeline', 'discover', 'compute', 'aggregate']);
+    expect(manifest.stages).toEqual(['discover', 'compute', 'aggregate']);
 
     // --- Assertion 3: nums.json is [1..30] -----------------------------------
     const numsRaw = await readFile(
@@ -134,10 +134,10 @@ describe.skipIf(!RUN_REAL || !HAS_AUTH)('real multi-stage pipeline', () => {
     const stageExits = events.filter(
       (e) => e.t === 'stage-exit' && (e as { status: string }).status === 'done',
     );
-    expect(stageEnters).toHaveLength(4);
-    expect(stageExits).toHaveLength(4);
+    expect(stageEnters).toHaveLength(3);
+    expect(stageExits).toHaveLength(3);
     const enterIds = stageEnters.map((e) => (e as { stageId: string }).stageId);
-    expect(enterIds).toEqual(['pipeline', 'discover', 'compute', 'aggregate']);
+    expect(enterIds).toEqual(['discover', 'compute', 'aggregate']);
 
     // --- Assertion 7: parallelism + ordering proof ---------------------------
     const spawnEvents = events.filter((e) => e.t === 'spawn') as Array<{

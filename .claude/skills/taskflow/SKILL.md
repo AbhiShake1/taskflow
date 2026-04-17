@@ -20,7 +20,7 @@ const urlsSchema = z.object({
   categories: z.array(z.string()),
 });
 
-export default taskflow('scrape-don').rules('./rules.md').run(async ({ phase, session }) => {
+export default taskflow('scrape-don').run(async ({ phase, session }) => {
   // Typed structured output: `discovered` is { urls: string[]; categories: string[] }.
   const discovered = await phase('discover', async () => {
     return session('discover-urls', {
@@ -144,32 +144,9 @@ Runs are archived at `data/runs/{runId}/` — `events.jsonl`, `manifest.json`, `
 - `HARNESS_RUNS_DIR=...` — override the runs archive dir (default `data/runs`).
 - `HARNESS_REAL_TESTS=1` — enables integration tests that make real LLM calls (default-skipped).
 
-## Low-level API (power users)
+## Engine internals
 
-The fluent API is a thin frontend that lowers to four primitives exported from `taskflow/core`:
-
-```ts
-import { harness, stage, leaf, parallel } from 'taskflow/core';
-
-await harness('pipeline', { rulesFile: './rules.md' }, async (h) => {
-  await stage(h, 'discover', async () => {
-    await leaf(h, {
-      id: 'discover-urls',
-      agent: 'claude-code',
-      model: 'sonnet',
-      task: 'Discover all URLs',
-      claims: ['data/urls.json'],
-    });
-  });
-  await stage(h, 'fetch', async () => {
-    await parallel(h, [
-      () => leaf(h, { id: 'shard-0', agent: 'opencode', model: 'groq/llama-3.3-70b', task: '...', claims: ['data/shard-0/**'] }),
-      () => leaf(h, { id: 'shard-1', agent: 'opencode', model: 'groq/llama-3.3-70b', task: '...', claims: ['data/shard-1/**'] }),
-    ]);
-  });
-});
-```
-
-Reach for the low-level form when you need fine-grained control the fluent builder hasn't surfaced yet (custom per-leaf adapters, conditional branches mid-execution, etc.). The fluent API and the core primitives are permanent siblings — the fluent one is the recommended path for new pipelines.
-
-YAML specs + `npm run build` emit the low-level form; optional, not the main path.
+The fluent API is a thin frontend that lowers onto engine primitives in `taskflow/core`
+(`harness`, `stage`, `leaf`, `parallel`). Reach for those only when you need
+fine-grained control the fluent builder hasn't surfaced yet. The fluent API is
+the recommended authoring path.

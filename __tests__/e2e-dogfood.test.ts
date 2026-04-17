@@ -61,8 +61,8 @@ describe('e2e pipeline via mock adapter', () => {
     const events = lines.map((l) => JSON.parse(l));
     expect(events.filter((e: { t: string }) => e.t === 'spawn')).toHaveLength(5);
     expect(events.filter((e: { t: string }) => e.t === 'done')).toHaveLength(5);
-    // pipeline has 4 stages: pipeline, discover, compute, aggregate.
-    expect(events.filter((e: { t: string }) => e.t === 'stage-enter').length).toBeGreaterThanOrEqual(4);
+    // pipeline has 3 phases: discover, compute, aggregate.
+    expect(events.filter((e: { t: string }) => e.t === 'stage-enter').length).toBeGreaterThanOrEqual(3);
   });
 
   it('writes proof.json for each leaf', async () => {

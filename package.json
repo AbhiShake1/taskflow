@@ -10,7 +10,6 @@
     "./tui": "./tui/index.tsx"
   },
   "scripts": {
-    "build": "tsx factory/cli.ts",
     "run": "tsx runner/index.ts",
     "test": "vitest run",
     "test:real": "HARNESS_REAL_TESTS=1 vitest run"
@@ -19,9 +18,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.111",
     "ink": "^7.0.0",
     "react": "^19.2.5",
-    "yaml": "^2.8.3",
     "zod": "^4.3.6",
-    "zod-to-json-schema": "^3.25.2",
     "zustand": "^5.0.12"
   },
   "devDependencies": {

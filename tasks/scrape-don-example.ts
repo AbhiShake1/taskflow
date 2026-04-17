@@ -41,9 +41,7 @@ async function resolveOpts(): Promise<HarnessOptions> {
 }
 
 export default await resolveOpts().then((opts) =>
-  taskflow('scrape-don')
-    .rules('./rules.md')
-    .run(async ({ phase, session }) => {
+  taskflow('scrape-don').run(async ({ phase, session }) => {
       // Phase 1: discover URLs. `discovered` is typed { urls: string[]; categories: string[] }.
       const discovered = await phase('discover', async () => {
         return session('discover-urls', {
