@@ -15,6 +15,24 @@ export type SpawnCtx = {
    * they write land in the sandbox, not the repo.
    */
   cwd?: string;
+  /**
+   * Contract for structured output. When set, the adapter must drive the LLM
+   * toward emitting a value that conforms to `jsonSchema` and surface it via
+   * the terminal `done` event's `result.structuredOutputValue`. See LeafSpec's
+   * `structuredOutput` doc for the full picture. Wire path:
+   *   fluent API → LeafSpec.structuredOutput → core/index.ts plumbs into
+   *   SpawnCtx.structuredOutput → adapter consumes.
+   *
+   * `_zodSchema` is an optional adapter-native handle carrying the original
+   * zod schema. Only claude-code uses it today (the claude-agent-sdk's MCP
+   * tool path expects a zod raw shape, not a pre-built JSON schema). Other
+   * adapters ignore it and rely on `jsonSchema` for their prompt-engineered
+   * fallback. Typed as `unknown` so this file keeps no zod dependency.
+   */
+  structuredOutput?: {
+    jsonSchema: Record<string, unknown>;
+    _zodSchema?: unknown;
+  };
 };
 
 export interface AgentHandle {

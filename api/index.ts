@@ -1,354 +1,205 @@
-// Fluent authoring API for taskflow.
+// Async-await fluent API for taskflow.
 //
-// This is an ADDITIVE layer on top of the low-level primitives in `../core`.
-// It lowers a synchronously-built tree of phases + sessions into calls to
-// `harness() / stage() / leaf() / parallel()` without touching the engine.
+// The authoring surface is two functions exposed via `run(async ({ phase, session }) => ...)`:
 //
-// Design:
-//   - `taskflow(name)` returns a builder.
-//   - `.rules(path)` / `.env(vars)` are chainable config setters.
-//   - `.run(fn)` calls `fn(publicCtx)` SYNCHRONOUSLY to collect the tree, then
-//     invokes the engine to execute it.
-//   - A single builder instance owns a `currentPhaseStack` — when a nested
-//     `phase(name, cb)` callback fires, we push onto the stack, run the
-//     callback, then pop. This is how `const { phase, session } = ctx; ...`
-//     still targets the right parent while code is inside a
-//     `phase(...).phase(...)` callback.
+//   phase(name, async body) → returns the body's return value verbatim.
+//     Pure pass-through around the engine's `stage(h, name, async body)`.
 //
-// Naming: the public surface speaks `phase` (grouping) and `session` (one
-// agent invocation). The engine underneath still uses its own vocabulary
-// (`stage` / `leaf`) — that is an internal detail and intentionally not
-// exposed to callers of this API.
+//   session(id, spec) → Promise<T>
+//     T is inferred from `spec.schema`:
+//       - `schema: ZodType<X>` → Promise<X>     (validated structured output)
+//       - no `schema`          → Promise<string> (the final assistant text)
+//     Rejects with a descriptive Error when the session ends in any non-'done'
+//     state (adapter failure, claims conflict, validation miss, etc.).
 //
-// No AsyncLocalStorage: the build phase is fully synchronous, so a plain stack
-// is enough and keeps the code obvious.
+// Key behaviour shifts from the previous tree-building API:
+//   - Parallelism is just `Promise.all([session(...), session(...)])`.
+//   - Fire-and-forget is a session call whose Promise is never awaited. The
+//     engine still runs it; errors are the dev's responsibility.
+//   - Dependency graphs are plain async/await control flow.
+//
+// The engine (core/index.ts) is unchanged in its execution contract: every
+// `session()` call is one `leaf()` call. We construct the session pipeline on
+// the fly inside the `harness()` body.
+//
+// Implementation notes:
+//   - The engine's `leaf()` rejects with a synthetic Error ("leaf failed: X")
+//     when status !== 'done'. We trap that at the session() boundary and
+//     re-throw a friendlier message that names the status and error string.
+//   - Structured output: the fluent API owns the zod→jsonSchema conversion so
+//     the engine stays zod-free. We also thread the raw zod schema through
+//     LeafSpec.structuredOutput._zodSchema so the claude-code adapter can use
+//     native tool-use (SDK requires a zod shape, not a JSON schema).
+
+import { toJSONSchema, type ZodType, type ZodTypeAny } from 'zod';
 
 import {
   harness as engineHarness,
   stage as engineStage,
   leaf as engineLeaf,
-  parallel as engineParallel,
   type HarnessOptions,
   type Manifest,
 } from '../core';
-import type { AgentName, Ctx, LeafSpec as EngineLeafSpec } from '../core/types';
+import type { Ctx, LeafSpec as EngineLeafSpec, LeafResult } from '../core/types';
+import { parseWith } from './parseWith';
+
+// Re-export parseWith so consumers importing from 'taskflow' still find it.
+export { parseWith } from './parseWith';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-const KNOWN_AGENTS: readonly AgentName[] = [
-  'claude-code',
-  'pi',
-  'codex',
-  'cursor',
-  'opencode',
-] as const;
-
-export type PublicSessionSpec = {
-  /** Optional: used only in the parallel/serial factory form (`{ id, ... }`). In `.session(id, spec)` form the id comes from the first argument. */
-  id?: string;
-  /** `'agent'` or `'agent:model'`. Split on the FIRST `:`; any further `:` chars stay in `model`. */
+/**
+ * A single session invocation's declarative spec. `schema` is the typed-output
+ * driver — its presence flips the return type from string → z.infer<typeof schema>.
+ */
+export interface SessionSpec<S extends ZodTypeAny = ZodTypeAny> {
+  /** `'agent'` or `'agent:model'` string. */
   with: string;
-  /** Task prompt. */
+  /** Task prompt. Literal string — no template substitution at runtime. */
   task: string;
-  /** Files this session claims to write (globs). Maps to engine `claims`. */
+  /** Globs this session writes. Runtime enforces disjointness between concurrent siblings. */
   write?: string[];
   /** Per-session timeout. */
   timeoutMs?: number;
   /** Opt out of the rules prefix for this session. */
   rulesPrefix?: boolean;
-};
+  /**
+   * Zod schema for structured output. When set, the adapter drives the LLM
+   * toward emitting a conforming value, and `session()` returns
+   * Promise<z.infer<typeof schema>> (validated). Omit for the default
+   * Promise<string> (the final assistant message text).
+   */
+  schema?: S;
+}
 
-export type PublicCtx = {
-  phase(name: string): PublicPhaseBuilder;
-  phase(name: string, body: (ctx: PublicCtx) => void): void;
-  session(id: string, spec: PublicSessionSpec): void;
-  parallel(thunks: Array<() => void>): void;
-};
+/**
+ * Return type of `session()` derived from a SessionSpec:
+ *   - when `schema` is supplied, `z.infer<typeof schema>`
+ *   - otherwise, `string` (the final assistant text)
+ *
+ * The trick is: `ZodTypeAny` extends `{ _output: unknown }`, so we read `_output`
+ * directly rather than going through `z.infer<...>` to keep the generic
+ * inference site-independent.
+ */
+export type SessionReturn<T extends SessionSpec<ZodTypeAny>> = T extends { schema: infer S }
+  ? S extends ZodType<infer Out>
+    ? Out
+    : unknown
+  : string;
 
-export interface PublicPhaseBuilder {
-  session(id: string, spec: PublicSessionSpec): PublicPhaseBuilder;
-  parallel(count: number, factory: (i: number) => PublicSessionSpec): PublicPhaseBuilder;
-  parallel<T>(items: readonly T[], factory: (item: T, i: number) => PublicSessionSpec): PublicPhaseBuilder;
-  serial(count: number, factory: (i: number) => PublicSessionSpec): PublicPhaseBuilder;
-  serial<T>(items: readonly T[], factory: (item: T, i: number) => PublicSessionSpec): PublicPhaseBuilder;
-  phase(name: string): PublicPhaseBuilder;
-  phase(name: string, body: (ctx: PublicCtx) => void): PublicPhaseBuilder;
+export interface RunCtx {
+  /**
+   * Wraps `engineStage()` around the provided async body. The body's return
+   * value is returned verbatim, so phases are a pure pass-through for values.
+   */
+  phase<T>(name: string, body: () => Promise<T>): Promise<T>;
+
+  /**
+   * Invoke one agent session. Returns a promise that resolves to the LLM's
+   * structured output (when `spec.schema` is set) or to the final assistant
+   * message text (otherwise). Rejects with a descriptive Error when the
+   * session fails.
+   */
+  session<S extends ZodTypeAny, T extends SessionSpec<S>>(
+    id: string,
+    spec: T,
+  ): Promise<SessionReturn<T>>;
 }
 
 export interface TaskflowBuilder {
   rules(path: string): TaskflowBuilder;
   env(vars: Record<string, string>): TaskflowBuilder;
   run(
-    fn: (ctx: PublicCtx) => void,
+    body: (ctx: RunCtx) => Promise<void> | Promise<unknown>,
     opts?: HarnessOptions,
   ): Promise<{ manifest: Manifest; ctx: Ctx }>;
 }
 
 // ---------------------------------------------------------------------------
-// Internal tree model (captured during the synchronous build phase).
-// Uses the public vocabulary (phase/session) for internal consistency.
+// Internals
 // ---------------------------------------------------------------------------
 
-type SessionNode = {
-  kind: 'session';
-  id: string;
-  spec: EngineLeafSpec;
-};
-
-type GroupNode = {
-  kind: 'group';
-  /** 'parallel' runs children concurrently; 'serial' runs them one at a time. */
-  mode: 'parallel' | 'serial';
-  children: SessionNode[];
-};
-
-type PhaseNode = {
-  kind: 'phase';
-  name: string;
-  children: Array<PhaseNode | SessionNode | GroupNode>;
-};
-
-type RootNode = {
-  kind: 'root';
-  children: Array<PhaseNode | SessionNode | GroupNode>;
-};
-
-// ---------------------------------------------------------------------------
-// parseWith — split 'agent:model' on the first `:`.
-// ---------------------------------------------------------------------------
-
-export function parseWith(s: string): { agent: AgentName; model?: string } {
-  const idx = s.indexOf(':');
-  const agent = idx === -1 ? s : s.slice(0, idx);
-  const model = idx === -1 ? undefined : s.slice(idx + 1);
-  if (!KNOWN_AGENTS.includes(agent as AgentName)) {
-    throw new Error(
-      `unknown agent in with: "${s}" — must start with one of ${KNOWN_AGENTS.join('|')}`,
-    );
-  }
-  return { agent: agent as AgentName, model: model === '' ? undefined : model };
-}
-
-function toEngineSpec(id: string, p: PublicSessionSpec): EngineLeafSpec {
-  const { agent, model } = parseWith(p.with);
-  const spec: EngineLeafSpec = {
+function toEngineSpec(
+  id: string,
+  spec: SessionSpec<ZodTypeAny>,
+): EngineLeafSpec {
+  const { agent, model } = parseWith(spec.with);
+  const out: EngineLeafSpec = {
     id,
     agent,
-    task: p.task,
+    task: spec.task,
   };
-  if (model !== undefined) spec.model = model;
-  if (p.write !== undefined) spec.claims = p.write;
-  if (p.timeoutMs !== undefined) spec.timeoutMs = p.timeoutMs;
-  if (p.rulesPrefix !== undefined) spec.rulesPrefix = p.rulesPrefix;
-  return spec;
-}
-
-// Normalise `.parallel/.serial` factory args into a SessionNode[] list. Handles
-// both overloads: (count, factory) and (items, factory).
-function buildFactorySessions(
-  countOrItems: number | readonly unknown[],
-  factory: (a: unknown, i: number) => PublicSessionSpec,
-): SessionNode[] {
-  const items: readonly unknown[] = typeof countOrItems === 'number'
-    ? Array.from({ length: countOrItems }, (_, i) => i)
-    : countOrItems;
-  const out: SessionNode[] = [];
-  items.forEach((item, i) => {
-    const spec = factory(item, i);
-    if (!spec.id) throw new Error('parallel/serial factory must return a spec with an "id" field');
-    out.push({ kind: 'session', id: spec.id, spec: toEngineSpec(spec.id, spec) });
-  });
+  if (model !== undefined) out.model = model;
+  if (spec.write !== undefined) out.claims = spec.write;
+  if (spec.timeoutMs !== undefined) out.timeoutMs = spec.timeoutMs;
+  if (spec.rulesPrefix !== undefined) out.rulesPrefix = spec.rulesPrefix;
+  if (spec.schema !== undefined) {
+    // Zod 4 exposes a native JSON-Schema export — prefer it over the
+    // `zod-to-json-schema` package (which lags behind zod 4's internal shape).
+    const jsonSchema = toJSONSchema(spec.schema) as Record<string, unknown>;
+    out.structuredOutput = {
+      jsonSchema,
+      _zodSchema: spec.schema,
+    };
+  }
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Builder
-// ---------------------------------------------------------------------------
-
-class Builder {
-  private rulesPath?: string;
-  private envVars?: Record<string, string>;
-  private root: RootNode = { kind: 'root', children: [] };
-
-  // Tracks the current "parent container" while a synchronous `phase(name, cb)`
-  // callback is executing. Top-of-stack is where new children go.
-  private phaseStack: Array<RootNode | PhaseNode> = [this.root];
-
-  constructor(private readonly name: string) {}
-
-  withRules(path: string): this {
-    this.rulesPath = path;
-    return this;
-  }
-
-  withEnv(vars: Record<string, string>): this {
-    this.envVars = { ...(this.envVars ?? {}), ...vars };
-    return this;
-  }
-
-  // Any new child goes to the current top-of-stack container.
-  private currentParent(): RootNode | PhaseNode {
-    return this.phaseStack[this.phaseStack.length - 1]!;
-  }
-
-  private pushChild(child: PhaseNode | SessionNode | GroupNode): void {
-    this.currentParent().children.push(child);
-  }
-
-  // Build a PhaseBuilder handle for a PhaseNode already attached to its parent.
-  private makePhaseBuilder(node: PhaseNode): PublicPhaseBuilder {
-    const self = this;
-    const pb: PublicPhaseBuilder = {
-      session(id: string, spec: PublicSessionSpec): PublicPhaseBuilder {
-        node.children.push({ kind: 'session', id, spec: toEngineSpec(id, spec) });
-        return pb;
-      },
-      parallel(
-        countOrItems: number | readonly unknown[],
-        factory: (a: any, i: number) => PublicSessionSpec,
-      ): PublicPhaseBuilder {
-        const sessions = buildFactorySessions(countOrItems, factory);
-        node.children.push({ kind: 'group', mode: 'parallel', children: sessions });
-        return pb;
-      },
-      serial(
-        countOrItems: number | readonly unknown[],
-        factory: (a: any, i: number) => PublicSessionSpec,
-      ): PublicPhaseBuilder {
-        const sessions = buildFactorySessions(countOrItems, factory);
-        node.children.push({ kind: 'group', mode: 'serial', children: sessions });
-        return pb;
-      },
-      phase(childName: string, body?: (ctx: PublicCtx) => void): PublicPhaseBuilder {
-        const child: PhaseNode = { kind: 'phase', name: childName, children: [] };
-        node.children.push(child);
-        if (body) {
-          self.phaseStack.push(child);
-          try {
-            body(self.makePublicCtx());
-          } finally {
-            self.phaseStack.pop();
-          }
-          return pb;
-        }
-        return self.makePhaseBuilder(child);
-      },
-    };
-    return pb;
-  }
-
-  private makePublicCtx(): PublicCtx {
-    const self = this;
-    // Overloaded phase — return PhaseBuilder when no body, void when body passed.
-    function phase(name: string): PublicPhaseBuilder;
-    function phase(name: string, body: (ctx: PublicCtx) => void): void;
-    function phase(name: string, body?: (ctx: PublicCtx) => void): PublicPhaseBuilder | void {
-      const node: PhaseNode = { kind: 'phase', name, children: [] };
-      self.pushChild(node);
-      if (body) {
-        self.phaseStack.push(node);
-        try {
-          body(self.makePublicCtx());
-        } finally {
-          self.phaseStack.pop();
-        }
-        return;
-      }
-      return self.makePhaseBuilder(node);
-    }
-
-    const session = (id: string, spec: PublicSessionSpec): void => {
-      self.pushChild({ kind: 'session', id, spec: toEngineSpec(id, spec) });
-    };
-
-    const parallel = (thunks: Array<() => void>): void => {
-      // Collect sessions emitted by each thunk into a single parallel group.
-      const group: GroupNode = { kind: 'group', mode: 'parallel', children: [] };
-      // Temporarily redirect `pushChild` into the group by pushing a pseudo-phase.
-      // Simpler: we rely on the convention that thunks call ctx.session(...)
-      // which appends to currentParent(). So we push the group's children array
-      // via a synthetic PhaseNode proxy.
-      const proxy: PhaseNode = { kind: 'phase', name: '__parallel__', children: [] };
-      self.phaseStack.push(proxy);
-      try {
-        for (const thunk of thunks) thunk();
-      } finally {
-        self.phaseStack.pop();
-      }
-      // Only SessionNodes are valid inside a top-level parallel — flatten.
-      for (const child of proxy.children) {
-        if (child.kind !== 'session') {
-          throw new Error('top-level parallel(thunks) may only contain sessions');
-        }
-        group.children.push(child);
-      }
-      self.pushChild(group);
-    };
-
-    return { phase, session, parallel };
-  }
-
-  async run(
-    fn: (ctx: PublicCtx) => void,
-    opts: HarnessOptions = {},
-  ): Promise<{ manifest: Manifest; ctx: Ctx }> {
-    // Build phase — synchronous. Populates this.root.
-    fn(this.makePublicCtx());
-
-    // Apply env vars before execution. We treat this as a simple process.env
-    // merge; callers can clear them after the returned promise settles if they
-    // need strict isolation. This is a stub that at least does SOMETHING useful.
-    if (this.envVars) {
-      for (const [k, v] of Object.entries(this.envVars)) {
-        process.env[k] = v;
-      }
-    }
-
-    const harnessOpts: HarnessOptions = { ...opts };
-    if (this.rulesPath !== undefined && harnessOpts.rulesFile === undefined) {
-      harnessOpts.rulesFile = this.rulesPath;
-    }
-
-    const root = this.root;
-    return engineHarness(this.name, harnessOpts, async (h) => {
-      await walkChildren(h, root.children);
-    });
-  }
-
-  /** Testing hook: build the tree without executing. Exported via `_buildTree`. */
-  buildTreeOnly(fn: (ctx: PublicCtx) => void): RootNode {
-    fn(this.makePublicCtx());
-    return this.root;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Executor — walk the captured tree and invoke engine primitives.
-// ---------------------------------------------------------------------------
-
-async function walkChildren(
+/**
+ * Run the engine `leaf()` and translate the result into the fluent API's
+ * return contract. On failure re-throws a descriptive Error so
+ * `await session(...)` gives a useful stack trace.
+ */
+async function runSession<T>(
   h: Ctx,
-  nodes: Array<PhaseNode | SessionNode | GroupNode>,
-): Promise<void> {
-  for (const n of nodes) {
-    if (n.kind === 'session') {
-      await engineLeaf(h, n.spec);
-    } else if (n.kind === 'phase') {
-      await engineStage(h, n.name, () => walkChildren(h, n.children));
-    } else {
-      // group
-      if (n.mode === 'parallel') {
-        await engineParallel(
-          h,
-          n.children.map((s) => () => engineLeaf(h, s.spec)),
-        );
-      } else {
-        for (const s of n.children) await engineLeaf(h, s.spec);
-      }
-    }
+  id: string,
+  spec: SessionSpec<ZodTypeAny>,
+): Promise<T> {
+  let result: LeafResult;
+  try {
+    result = await engineLeaf(h, toEngineSpec(id, spec));
+  } catch (engineErr) {
+    // engineLeaf throws a generic "leaf failed: <id>" wrapping whatever the
+    // adapter reported. We want to surface the adapter's own error text.
+    const err = engineErr instanceof Error ? engineErr : new Error(String(engineErr));
+    throw new Error(`session "${id}" failed: ${err.message}`);
   }
+
+  if (result.status !== 'done') {
+    // Shouldn't normally be reached — engineLeaf throws on non-done. Keep a
+    // guard in case of timeout paths that resolve rather than throw.
+    const reason = result.error ?? result.status;
+    throw new Error(`session "${id}" ended with status=${result.status}: ${reason}`);
+  }
+
+  if (spec.schema !== undefined) {
+    if (result.structuredOutputValue === undefined) {
+      throw new Error(
+        `session "${id}" completed but produced no structured output (expected schema-shaped value)`,
+      );
+    }
+    const parsed = spec.schema.safeParse(result.structuredOutputValue);
+    if (!parsed.success) {
+      // Surface the zod error text — callers need enough info to diagnose.
+      throw new Error(
+        `session "${id}" structured output failed schema validation: ${parsed.error.message}`,
+      );
+    }
+    return parsed.data as T;
+  }
+
+  // Schema-less path: return the final assistant text. Adapters populate
+  // finalAssistantText on the result; the engine backfills it from observed
+  // events when the adapter doesn't.
+  if (typeof result.finalAssistantText !== 'string') {
+    // Returning '' rather than throwing — a session can legitimately have no
+    // assistant text (e.g. it only performed tool actions). Callers that need
+    // strict text can use a schema.
+    return '' as T;
+  }
+  return result.finalAssistantText as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,27 +207,52 @@ async function walkChildren(
 // ---------------------------------------------------------------------------
 
 export function taskflow(name: string): TaskflowBuilder {
-  const b = new Builder(name);
+  let rulesPath: string | undefined;
+  let envVars: Record<string, string> | undefined;
+
   const api: TaskflowBuilder = {
     rules(path: string) {
-      b.withRules(path);
+      rulesPath = path;
       return api;
     },
     env(vars: Record<string, string>) {
-      b.withEnv(vars);
+      envVars = { ...(envVars ?? {}), ...vars };
       return api;
     },
-    run(fn, opts) {
-      return b.run(fn, opts);
+    async run(body, opts = {}) {
+      // Apply env vars before execution (matches old API behaviour).
+      if (envVars) {
+        for (const [k, v] of Object.entries(envVars)) {
+          process.env[k] = v;
+        }
+      }
+
+      const harnessOpts: HarnessOptions = { ...opts };
+      if (rulesPath !== undefined && harnessOpts.rulesFile === undefined) {
+        harnessOpts.rulesFile = rulesPath;
+      }
+
+      return engineHarness(name, harnessOpts, async (h) => {
+        const ctx: RunCtx = {
+          async phase<T>(phaseName: string, phaseBody: () => Promise<T>): Promise<T> {
+            let result!: T;
+            await engineStage(h, phaseName, async () => {
+              result = await phaseBody();
+            });
+            return result;
+          },
+          async session<S extends ZodTypeAny, T extends SessionSpec<S>>(
+            id: string,
+            spec: T,
+          ): Promise<SessionReturn<T>> {
+            return runSession<SessionReturn<T>>(h, id, spec);
+          },
+        };
+
+        await body(ctx);
+      });
     },
   };
+
   return api;
 }
-
-// Test-only export: build the tree without executing. Returns the raw RootNode
-// so tests can assert shape directly. Not part of the user-facing surface.
-export function _buildTree(name: string, fn: (ctx: PublicCtx) => void): RootNode {
-  return new Builder(name).buildTreeOnly(fn);
-}
-
-export type { RootNode as _RootNode, PhaseNode as _PhaseNode, SessionNode as _SessionNode, GroupNode as _GroupNode };

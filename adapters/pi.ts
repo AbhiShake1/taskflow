@@ -6,6 +6,9 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
+// TODO(taskflow): upgrade to pi/omp-native structured output when the CLI exposes
+// a schema flag. For now we use prompt-engineered fallback.
+import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
  * Injected spawn fn — overridable by tests via {@link __setSpawn}.
@@ -72,8 +75,12 @@ const piAdapter: AgentAdapter = {
     ch.push({ t: 'spawn', leafId, agent: 'pi', model: spec.model, ts: Date.now() });
 
     // Resolve prompt with optional rules prefix.
-    const prompt =
+    const basePrompt =
       spec.rulesPrefix !== false && ctx.rulesPrefix ? ctx.rulesPrefix + spec.task : spec.task;
+    // Prompt-engineering fallback for structured output.
+    const prompt = ctx.structuredOutput
+      ? basePrompt + '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
+      : basePrompt;
 
     // --allow-home opts out of omp/pi's default home-sandbox: without it, pi auto-
     // switches cwd to a temp directory, so any files it writes end up outside the
@@ -90,6 +97,7 @@ const piAdapter: AgentAdapter = {
     let aborted = false;
     let killTimer: NodeJS.Timeout | undefined;
     let stderrBuf = '';
+    let lastAssistantText: string | undefined;
     let resolveResult!: (r: LeafResult) => void;
     const doneP = new Promise<LeafResult>((res) => {
       resolveResult = res;
@@ -99,7 +107,7 @@ const piAdapter: AgentAdapter = {
       if (doneEmitted) return;
       doneEmitted = true;
       if (killTimer) clearTimeout(killTimer);
-      const result: LeafResult = {
+      const base: LeafResult = {
         leafId,
         status,
         exitCode,
@@ -107,6 +115,23 @@ const piAdapter: AgentAdapter = {
         endedAt: Date.now(),
         ...(errorMsg ? { error: errorMsg } : {}),
       };
+      let result: LeafResult = base;
+      if (lastAssistantText !== undefined) {
+        result = { ...result, finalAssistantText: lastAssistantText };
+        if (ctx.structuredOutput && status === 'done') {
+          const parsed = jsonBlockFromText(lastAssistantText);
+          if (parsed !== null) {
+            result = { ...result, structuredOutputValue: parsed };
+          } else {
+            result = {
+              ...result,
+              status: 'error',
+              exitCode: 1,
+              error: 'pi: structured output requested but no JSON block found in final assistant message',
+            };
+          }
+        }
+      }
       ch.push({ t: 'done', leafId, result, ts: Date.now() });
       ch.close();
       resolveResult(result);
@@ -212,6 +237,7 @@ const piAdapter: AgentAdapter = {
               : buffered ?? '';
           turnBuffers.delete(k);
           if (content.length > 0) {
+            lastAssistantText = content;
             ch.push({
               t: 'message',
               leafId,

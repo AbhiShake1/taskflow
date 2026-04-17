@@ -177,6 +177,16 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
       // no cwd is supplied, so any files they write land outside the repo. Falling
       // back to process.cwd() here matches the runner's default.
       cwd: getRunner()?.cwd ?? process.cwd(),
+      ...(spec.structuredOutput
+        ? {
+            structuredOutput: {
+              jsonSchema: spec.structuredOutput.jsonSchema,
+              ...(spec.structuredOutput._zodSchema !== undefined
+                ? { _zodSchema: spec.structuredOutput._zodSchema }
+                : {}),
+            },
+          }
+        : {}),
     };
 
     const startedAt = Date.now();
@@ -187,9 +197,18 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
     const runner = getRunner();
     runner?.activeHandles.set(spec.id, handle);
 
-    // Drain events into the run bus in the background.
+    // Observe events as they stream in. Two purposes:
+    //   1. Publish them onto the run bus for downstream consumers.
+    //   2. Track the last assistant message text so the engine can backfill
+    //      `result.finalAssistantText` when the adapter didn't set it. Most
+    //      adapters already set it on their terminal `done`, but nothing
+    //      *requires* them to — this keeps the contract single-sourced here.
+    let lastAssistantText: string | undefined;
     const drain = (async () => {
       for await (const ev of handle.events as AsyncIterable<AgentEvent>) {
+        if (ev.t === 'message' && ev.role === 'assistant' && typeof ev.content === 'string' && ev.content.length > 0) {
+          lastAssistantText = ev.content;
+        }
         h.bus.publish(ev);
       }
     })().catch(() => { /* already surfaced via handle.wait() */ });
@@ -221,6 +240,15 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
 
     // Make sure event drain has run to completion so publishes are flushed.
     await drain;
+
+    // Engine-side backfill: adapters MAY set `finalAssistantText` on their done
+    // event, but the contract is single-sourced here. If the adapter didn't set
+    // it, fall back to the last assistant message we observed in the stream.
+    // `structuredOutputValue` stays adapter-owned — only the adapter knows
+    // whether it came from a real tool-use capture or a fallback parse.
+    if (result.finalAssistantText === undefined && lastAssistantText !== undefined) {
+      result = { ...result, finalAssistantText: lastAssistantText };
+    }
 
     const endedAt = Date.now();
     const durationMs = endedAt - startedAt;

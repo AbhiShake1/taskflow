@@ -6,6 +6,10 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
+// TODO(taskflow): upgrade to codex-native structured output once `codex exec`
+// gains a first-class --response-format / --schema flag. For now we rely on
+// prompt-engineered fallback — see adapters/structured-output.ts.
+import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
  * Injected spawn fn — overridable by tests via {@link __setSpawn}.
@@ -81,8 +85,12 @@ const codexAdapter: AgentAdapter = {
     ch.push({ t: 'spawn', leafId, agent: 'codex', model: spec.model, ts: Date.now() });
 
     // Resolve prompt with optional rules prefix.
-    const prompt =
+    const basePrompt =
       spec.rulesPrefix !== false && ctx.rulesPrefix ? ctx.rulesPrefix + spec.task : spec.task;
+    // Prompt-engineering fallback for structured output: append schema guidance.
+    const prompt = ctx.structuredOutput
+      ? basePrompt + '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
+      : basePrompt;
 
     // codex CLI: `codex exec --json --model <id> -p "<task>"`.
     // The `-p` flag passes the prompt via argv; stdin is reserved for steering (plain text).
@@ -99,6 +107,9 @@ const codexAdapter: AgentAdapter = {
     let aborted = false;
     let killTimer: NodeJS.Timeout | undefined;
     let stderrBuf = '';
+    // Track the last assistant message text we emitted, so we can backfill
+    // result.finalAssistantText and parse structured output from it on finalize.
+    let lastAssistantText: string | undefined;
     let resolveResult!: (r: LeafResult) => void;
     const doneP = new Promise<LeafResult>((res) => {
       resolveResult = res;
@@ -108,7 +119,7 @@ const codexAdapter: AgentAdapter = {
       if (doneEmitted) return;
       doneEmitted = true;
       if (killTimer) clearTimeout(killTimer);
-      const result: LeafResult = {
+      const base: LeafResult = {
         leafId,
         status,
         exitCode,
@@ -116,6 +127,27 @@ const codexAdapter: AgentAdapter = {
         endedAt: Date.now(),
         ...(errorMsg ? { error: errorMsg } : {}),
       };
+      // Attach finalAssistantText + structured output only when we actually have
+      // a final message — avoid sprinkling undefined fields on failure paths.
+      let result: LeafResult = base;
+      if (lastAssistantText !== undefined) {
+        result = { ...result, finalAssistantText: lastAssistantText };
+        if (ctx.structuredOutput && status === 'done') {
+          const parsed = jsonBlockFromText(lastAssistantText);
+          if (parsed !== null) {
+            result = { ...result, structuredOutputValue: parsed };
+          } else {
+            // Adapter couldn't parse → demote to error. The fluent API layer
+            // surfaces this as a rejected session promise with a clear message.
+            result = {
+              ...result,
+              status: 'error',
+              exitCode: 1,
+              error: 'codex: structured output requested but no JSON block found in final assistant message',
+            };
+          }
+        }
+      }
       ch.push({ t: 'done', leafId, result, ts: Date.now() });
       ch.close();
       resolveResult(result);
@@ -222,6 +254,7 @@ const codexAdapter: AgentAdapter = {
               : buffered ?? '';
           turnBuffers.delete(k);
           if (content.length > 0) {
+            lastAssistantText = content;
             ch.push({
               t: 'message',
               leafId,
@@ -236,6 +269,7 @@ const codexAdapter: AgentAdapter = {
         case 'item.message': {
           if (msg.role && msg.role !== 'assistant') return;
           if (typeof msg.content === 'string' && msg.content.length > 0) {
+            lastAssistantText = msg.content;
             ch.push({
               t: 'message',
               leafId,

@@ -8,6 +8,25 @@ export type LeafSpec = {
   claims?: string[];
   timeoutMs?: number;
   rulesPrefix?: boolean;                       // default true
+  /**
+   * Opt-in structured-output contract. When set, the adapter must:
+   *   - instruct the LLM to emit a value conforming to `jsonSchema`
+   *   - capture that value (natively via tool-use where the adapter supports it,
+   *     or via prompt-engineered JSON-block fallback otherwise)
+   *   - report it on the terminal `done` event via `result.structuredOutputValue`
+   *
+   * The fluent API (`session(id, { schema: z.object(...), ... })`) derives
+   * `jsonSchema` from a zod validator and enforces the type on the returned promise.
+   * The engine itself does no validation — that's the API layer's job, because
+   * the engine must stay zod-free (core/types has no runtime deps).
+   *
+   * `_zodSchema` is an opaque adapter-native escape hatch (only claude-code's
+   * native tool-use path uses it). Typed as `unknown` so core/types stays zod-free.
+   */
+  structuredOutput?: {
+    jsonSchema: Record<string, unknown>;
+    _zodSchema?: unknown;
+  };
 };
 
 export type LeafStatus = 'pending' | 'running' | 'done' | 'error' | 'aborted' | 'timeout';
@@ -39,6 +58,22 @@ export type LeafResult = {
   endedAt: number;
   proofPath?: string;
   usage?: LeafUsage;
+  /**
+   * The last `role:'assistant'` message text the adapter observed, regardless of
+   * whether a structured-output schema was configured. Populated by every adapter
+   * so the fluent API can return it as the default (schema-less) session return
+   * value. Absent when no assistant message ever arrived (hard spawn failure).
+   */
+  finalAssistantText?: string;
+  /**
+   * Parsed value produced when `LeafSpec.structuredOutput` is set. Adapters that
+   * support native tool-use populate this from the captured tool input; others
+   * parse the trailing ```json ... ``` block out of the final assistant text.
+   * The engine does NOT validate this against the schema — that's the API layer's
+   * job. Absent when no schema was configured OR parsing failed (in which case
+   * `status === 'error'` and `error` explains why).
+   */
+  structuredOutputValue?: unknown;
 };
 
 export type AgentEvent =

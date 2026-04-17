@@ -1,5 +1,6 @@
 import type { AgentEvent, LeafResult, LeafSpec, LeafUsage } from '../core/types';
 import { AgentAdapter, AgentHandle, EventChannel, SpawnCtx } from './index';
+import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
  * Claude Code adapter — in-process, streaming-input mode via `@anthropic-ai/claude-agent-sdk`.
@@ -104,6 +105,28 @@ const claudeCodeAdapter: AgentAdapter = {
       t: 'spawn', leafId: spec.id, agent: spec.agent, model: spec.model, ts: Date.now(),
     });
 
+    // Structured output setup. Two modes:
+    //   1. Native tool-use when the spec supplies a zod schema (the fluent API
+    //      threads it through via `structuredOutput._zodSchema`). We'll register
+    //      a `submit_result` MCP tool and instruct the model to call it.
+    //   2. Prompt-engineered JSON-block fallback when we only have a raw JSON
+    //      schema — matches the other adapters.
+    const zodShape = extractZodShape(ctx.structuredOutput?._zodSchema);
+    const useNativeToolUse = ctx.structuredOutput !== undefined && zodShape !== null;
+    const taskPromptSuffix = ctx.structuredOutput
+      ? useNativeToolUse
+        ? [
+            '',
+            '---',
+            'IMPORTANT: When you are done, you MUST call the `submit_result`',
+            'tool exactly once with your final answer. Do not emit any other',
+            'text after calling it. The harness reads your structured output',
+            'ONLY from that tool call.',
+          ].join('\n')
+        : '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
+      : '';
+    const taskText = spec.task + taskPromptSuffix;
+
     // Build the initial user message. If rulesPrefix is provided AND spec.rulesPrefix !== false,
     // split the prompt into two content blocks so the rules block can be marked cacheable.
     const includeRules = spec.rulesPrefix !== false && !!ctx.rulesPrefix;
@@ -119,14 +142,14 @@ const claudeCodeAdapter: AgentAdapter = {
                 text: ctx.rulesPrefix as string,
                 cache_control: { type: 'ephemeral', ttl: '1h' },
               },
-              { type: 'text', text: spec.task },
+              { type: 'text', text: taskText },
             ],
           },
         }
       : {
           type: 'user',
           parent_tool_use_id: null,
-          message: { role: 'user', content: spec.task },
+          message: { role: 'user', content: taskText },
         };
 
     const input = new InputStream();
@@ -155,6 +178,13 @@ const claudeCodeAdapter: AgentAdapter = {
     // Anthropic prompt-caching is actually firing (cacheReadInputTokens > 0 across
     // back-to-back runs that share a rulesPrefix).
     let lastUsage: LeafUsage | undefined;
+    // Structured output capture state. `capturedStructuredOutput` is set when
+    // the model invokes our `submit_result` tool OR when we parse a JSON block
+    // out of the final assistant message (fallback path). `lastAssistantText`
+    // mirrors the last assistant text we saw — used both for the fallback
+    // parse and for finalAssistantText backfill.
+    let capturedStructuredOutput: unknown | undefined;
+    let lastAssistantText: string | undefined;
     // Resolves once queryObj is constructed (so `abort()` can wait for it to exist before
     // calling interrupt()). Settles to null on init failure to unblock any waiters.
     let resolveReady!: (q: any) => void;
@@ -173,6 +203,48 @@ const claudeCodeAdapter: AgentAdapter = {
         // The SDK otherwise creates its own sandbox temp dir and flattens paths,
         // so tool-written files never land in the repo.
         const repoCwd = ctx.cwd ?? ctx.runDir;
+
+        // Wire up a `submit_result` MCP tool when structured output is requested
+        // AND we have a usable zod shape. The SDK's tool() helper wants a zod
+        // raw shape; we get that via `extractZodShape` from the fluent API's
+        // zod schema. On tool invocation we stash the args in
+        // `capturedStructuredOutput` and return a minimal success response so
+        // the model sees the tool call complete cleanly.
+        const mcpServers: Record<string, unknown> = {};
+        const extraAllowedTools: string[] = [];
+        if (useNativeToolUse && zodShape) {
+          const createSdkMcpServer = sdk.createSdkMcpServer ?? sdk.default?.createSdkMcpServer;
+          const toolHelper = sdk.tool ?? sdk.default?.tool;
+          if (typeof createSdkMcpServer === 'function' && typeof toolHelper === 'function') {
+            const submitTool = toolHelper(
+              'submit_result',
+              'Submit the final structured result for this task. Call exactly once at the end.',
+              zodShape,
+              async (args: unknown) => {
+                capturedStructuredOutput = args;
+                return {
+                  content: [{ type: 'text', text: 'ok' }],
+                };
+              },
+            );
+            const server = createSdkMcpServer({
+              name: 'taskflow-structured-output',
+              tools: [submitTool],
+            });
+            // Per SDK docs: MCP servers are keyed by a caller-chosen name, and
+            // tool names appearing in the stream are namespaced as
+            // `mcp__<server-name>__<tool-name>`. We pre-allow our tool so the
+            // CLI doesn't gate it behind a permission prompt.
+            mcpServers['taskflow_structured_output'] = server;
+            extraAllowedTools.push('mcp__taskflow_structured_output__submit_result');
+          }
+          // If the SDK didn't export createSdkMcpServer/tool for some reason,
+          // fall through silently — we'll still get a final assistant message
+          // and can parse a JSON block out of it (the prompt already asks the
+          // model to call submit_result, but failing that, the fallback parse
+          // is a best-effort safety net).
+        }
+
         queryObj = queryFn({
           prompt: input as AsyncIterable<any>,
           options: {
@@ -189,6 +261,8 @@ const claudeCodeAdapter: AgentAdapter = {
             // Leaf agents need to be able to act without human approval.
             permissionMode: 'bypassPermissions',
             allowDangerouslySkipPermissions: true,
+            ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+            ...(extraAllowedTools.length > 0 ? { allowedTools: extraAllowedTools } : {}),
           },
         });
         resolveReady(queryObj);
@@ -196,6 +270,13 @@ const claudeCodeAdapter: AgentAdapter = {
         for await (const msg of queryObj as AsyncIterable<any>) {
           if (aborted) break;
           await normalizeMessage(msg, spec.id, ch);
+          // Track the last assistant text we see, both for finalAssistantText
+          // backfill and for the JSON-block fallback path (if the model ignored
+          // our submit_result tool and just emitted prose + a JSON block).
+          if (msg && typeof msg === 'object' && (msg as any).type === 'assistant') {
+            const txt = stringifyAssistantContent((msg as any).message?.content);
+            if (txt.length > 0) lastAssistantText = txt;
+          }
           // End-of-turn: the SDK emits exactly one `SDKResultMessage` (discriminator
           // `type: 'result'`, subtype success|error_*) when the assistant is finished.
           // Until we close the input iterable, `query()` keeps awaiting further
@@ -210,9 +291,41 @@ const claudeCodeAdapter: AgentAdapter = {
 
         if (aborted) return; // abort() handler will settle.
         const endedAt = Date.now();
+
+        // Build structuredOutputValue if requested. Priority:
+        //   1. Tool-use capture (capturedStructuredOutput set by the MCP handler).
+        //   2. JSON-block fallback parse of the final assistant text.
+        //   3. None → session ends in error with a descriptive message.
+        let structuredOutputValue: unknown | undefined;
+        let failStatus: 'error' | null = null;
+        let failError: string | undefined;
+        if (ctx.structuredOutput) {
+          if (capturedStructuredOutput !== undefined) {
+            structuredOutputValue = capturedStructuredOutput;
+          } else if (lastAssistantText) {
+            const parsed = jsonBlockFromText(lastAssistantText);
+            if (parsed !== null) {
+              structuredOutputValue = parsed;
+            } else {
+              failStatus = 'error';
+              failError = 'claude-code: structured output requested but no submit_result call and no JSON block found';
+            }
+          } else {
+            failStatus = 'error';
+            failError = 'claude-code: structured output requested but no assistant message emitted';
+          }
+        }
+
         const result: LeafResult = {
-          leafId: spec.id, status: 'done', exitCode: 0, startedAt, endedAt,
+          leafId: spec.id,
+          status: failStatus ?? 'done',
+          exitCode: failStatus ? 1 : 0,
+          startedAt,
+          endedAt,
+          ...(failError ? { error: failError } : {}),
           ...(lastUsage ? { usage: lastUsage } : {}),
+          ...(lastAssistantText !== undefined ? { finalAssistantText: lastAssistantText } : {}),
+          ...(structuredOutputValue !== undefined ? { structuredOutputValue } : {}),
         };
         ch.push({ t: 'done', leafId: spec.id, result, ts: endedAt });
         ch.close();
@@ -372,6 +485,49 @@ function extractUsage(raw: unknown): LeafUsage | undefined {
   if (usage.cacheCreationInputTokens !== undefined) out.cacheCreationInputTokens = usage.cacheCreationInputTokens;
   if (usage.cacheReadInputTokens !== undefined) out.cacheReadInputTokens = usage.cacheReadInputTokens;
   return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Given an arbitrary value (expected to be a ZodObject instance), return its
+ * raw shape — the `Record<string, ZodTypeAny>` that the claude-agent-sdk's
+ * `tool()` helper expects as its third argument. Returns null for anything
+ * else (including plain zod primitives like `z.string()`, which aren't valid
+ * top-level MCP tool input schemas — tools must take objects).
+ *
+ * Typed as `unknown` in/out so this adapter has no zod dependency.
+ */
+function extractZodShape(schema: unknown): Record<string, unknown> | null {
+  if (!schema || typeof schema !== 'object') return null;
+  const s = schema as Record<string, unknown>;
+  // zod 3: ._def.shape() ; zod 4: ._def.shape ; both expose .shape on the instance.
+  const maybeShape = s.shape;
+  if (maybeShape && typeof maybeShape === 'object') {
+    return maybeShape as Record<string, unknown>;
+  }
+  if (typeof maybeShape === 'function') {
+    try {
+      const result = (maybeShape as () => unknown)();
+      if (result && typeof result === 'object') return result as Record<string, unknown>;
+    } catch {
+      /* ignore */
+    }
+  }
+  // Last-ditch for zod 3: ._def.shape() closure.
+  const def = s._def as Record<string, unknown> | undefined;
+  if (def) {
+    const shapeThunk = def.shape;
+    if (typeof shapeThunk === 'function') {
+      try {
+        const r = (shapeThunk as () => unknown)();
+        if (r && typeof r === 'object') return r as Record<string, unknown>;
+      } catch {
+        /* ignore */
+      }
+    } else if (shapeThunk && typeof shapeThunk === 'object') {
+      return shapeThunk as Record<string, unknown>;
+    }
+  }
+  return null;
 }
 
 export default claudeCodeAdapter;

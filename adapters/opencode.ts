@@ -6,6 +6,10 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
+// TODO(taskflow): upgrade to opencode-native structured output once the ACP
+// protocol exposes a schema/response-format channel. For now we use prompt-
+// engineered fallback.
+import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
  * Injected spawn fn — overridable by tests via {@link __setSpawn}.
@@ -39,8 +43,11 @@ const opencodeAdapter: AgentAdapter = {
     ch.push({ t: 'spawn', leafId, agent: 'opencode', model: spec.model, ts: Date.now() });
 
     // Resolve prompt with optional rules prefix.
-    const prompt =
+    const basePrompt =
       spec.rulesPrefix !== false && ctx.rulesPrefix ? ctx.rulesPrefix + spec.task : spec.task;
+    const prompt = ctx.structuredOutput
+      ? basePrompt + '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
+      : basePrompt;
 
     // opencode acp --model <provider/id> -p "<task>"
     const args = ['acp'];
@@ -51,6 +58,7 @@ const opencodeAdapter: AgentAdapter = {
     let aborted = false;
     let killTimer: NodeJS.Timeout | undefined;
     let stderrBuf = '';
+    let lastAssistantText: string | undefined;
     let resolveResult!: (r: LeafResult) => void;
     const doneP = new Promise<LeafResult>((res) => {
       resolveResult = res;
@@ -60,7 +68,7 @@ const opencodeAdapter: AgentAdapter = {
       if (doneEmitted) return;
       doneEmitted = true;
       if (killTimer) clearTimeout(killTimer);
-      const result: LeafResult = {
+      const base: LeafResult = {
         leafId,
         status,
         exitCode,
@@ -68,6 +76,23 @@ const opencodeAdapter: AgentAdapter = {
         endedAt: Date.now(),
         ...(errorMsg ? { error: errorMsg } : {}),
       };
+      let result: LeafResult = base;
+      if (lastAssistantText !== undefined) {
+        result = { ...result, finalAssistantText: lastAssistantText };
+        if (ctx.structuredOutput && status === 'done') {
+          const parsed = jsonBlockFromText(lastAssistantText);
+          if (parsed !== null) {
+            result = { ...result, structuredOutputValue: parsed };
+          } else {
+            result = {
+              ...result,
+              status: 'error',
+              exitCode: 1,
+              error: 'opencode: structured output requested but no JSON block found in final assistant message',
+            };
+          }
+        }
+      }
       ch.push({ t: 'done', leafId, result, ts: Date.now() });
       ch.close();
       resolveResult(result);
@@ -146,6 +171,7 @@ const opencodeAdapter: AgentAdapter = {
           if (!role) return;
           const content = typeof msg.content === 'string' ? msg.content : '';
           if (content.length === 0) return;
+          if (role === 'assistant') lastAssistantText = content;
           ch.push({ t: 'message', leafId, role, content, ts: Date.now() });
           return;
         }
