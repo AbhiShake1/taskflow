@@ -31,21 +31,21 @@ async function resolveOpts(): Promise<HarnessOptions> {
 export default (await resolveOpts().then((opts) =>
   taskflow('scrape-don')
     .rules('./rules.md')
-    .run(({ stage }) => {
-      stage('discover').leaf('discover-urls', {
+    .run(({ phase }) => {
+      phase('discover').session('discover-urls', {
         with: 'claude-code:sonnet',
         task: 'Discover all business URLs via sitemap',
         write: ['data/urls.json'],
       });
 
-      stage('fetch').parallel(4, (i) => ({
+      phase('fetch').parallel(4, (i) => ({
         id: `shard-${i}`,
         with: 'opencode:groq/llama-3.3-70b',
         task: `Fetch shard ${i} of URLs`,
         write: [`data/shard-${i}/**`],
       }));
 
-      stage('ingest').leaf('merge', {
+      phase('ingest').session('merge', {
         with: 'pi:anthropic/claude-opus-4-7',
         task: 'Merge shard outputs into data/merged.json',
         write: ['data/merged.json'],

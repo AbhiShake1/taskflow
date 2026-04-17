@@ -1,7 +1,7 @@
 // Fluent authoring API for taskflow.
 //
 // This is an ADDITIVE layer on top of the low-level primitives in `../core`.
-// It lowers a synchronously-built tree of stages + leaves into calls to
+// It lowers a synchronously-built tree of phases + sessions into calls to
 // `harness() / stage() / leaf() / parallel()` without touching the engine.
 //
 // Design:
@@ -9,11 +9,16 @@
 //   - `.rules(path)` / `.env(vars)` are chainable config setters.
 //   - `.run(fn)` calls `fn(publicCtx)` SYNCHRONOUSLY to collect the tree, then
 //     invokes the engine to execute it.
-//   - A single builder instance owns a `currentStageStack` — when a nested
-//     `stage(name, cb)` callback fires, we push onto the stack, run the
-//     callback, then pop. This is how `const { stage, leaf } = ctx; ...` still
-//     targets the right parent while code is inside a `stage(...).stage(...)`
-//     callback.
+//   - A single builder instance owns a `currentPhaseStack` — when a nested
+//     `phase(name, cb)` callback fires, we push onto the stack, run the
+//     callback, then pop. This is how `const { phase, session } = ctx; ...`
+//     still targets the right parent while code is inside a
+//     `phase(...).phase(...)` callback.
+//
+// Naming: the public surface speaks `phase` (grouping) and `session` (one
+// agent invocation). The engine underneath still uses its own vocabulary
+// (`stage` / `leaf`) — that is an internal detail and intentionally not
+// exposed to callers of this API.
 //
 // No AsyncLocalStorage: the build phase is fully synchronous, so a plain stack
 // is enough and keeps the code obvious.
@@ -40,36 +45,36 @@ const KNOWN_AGENTS: readonly AgentName[] = [
   'opencode',
 ] as const;
 
-export type PublicLeafSpec = {
-  /** Optional: used only in the parallel/serial factory form (`{ id, ... }`). In `.leaf(id, spec)` form the id comes from the first argument. */
+export type PublicSessionSpec = {
+  /** Optional: used only in the parallel/serial factory form (`{ id, ... }`). In `.session(id, spec)` form the id comes from the first argument. */
   id?: string;
   /** `'agent'` or `'agent:model'`. Split on the FIRST `:`; any further `:` chars stay in `model`. */
   with: string;
   /** Task prompt. */
   task: string;
-  /** Files this leaf claims to write (globs). Maps to engine `claims`. */
+  /** Files this session claims to write (globs). Maps to engine `claims`. */
   write?: string[];
-  /** Per-leaf timeout. */
+  /** Per-session timeout. */
   timeoutMs?: number;
-  /** Opt out of the rules prefix for this leaf. */
+  /** Opt out of the rules prefix for this session. */
   rulesPrefix?: boolean;
 };
 
 export type PublicCtx = {
-  stage(name: string): PublicStageBuilder;
-  stage(name: string, body: (ctx: PublicCtx) => void): void;
-  leaf(id: string, spec: PublicLeafSpec): void;
+  phase(name: string): PublicPhaseBuilder;
+  phase(name: string, body: (ctx: PublicCtx) => void): void;
+  session(id: string, spec: PublicSessionSpec): void;
   parallel(thunks: Array<() => void>): void;
 };
 
-export interface PublicStageBuilder {
-  leaf(id: string, spec: PublicLeafSpec): PublicStageBuilder;
-  parallel(count: number, factory: (i: number) => PublicLeafSpec): PublicStageBuilder;
-  parallel<T>(items: readonly T[], factory: (item: T, i: number) => PublicLeafSpec): PublicStageBuilder;
-  serial(count: number, factory: (i: number) => PublicLeafSpec): PublicStageBuilder;
-  serial<T>(items: readonly T[], factory: (item: T, i: number) => PublicLeafSpec): PublicStageBuilder;
-  stage(name: string): PublicStageBuilder;
-  stage(name: string, body: (ctx: PublicCtx) => void): PublicStageBuilder;
+export interface PublicPhaseBuilder {
+  session(id: string, spec: PublicSessionSpec): PublicPhaseBuilder;
+  parallel(count: number, factory: (i: number) => PublicSessionSpec): PublicPhaseBuilder;
+  parallel<T>(items: readonly T[], factory: (item: T, i: number) => PublicSessionSpec): PublicPhaseBuilder;
+  serial(count: number, factory: (i: number) => PublicSessionSpec): PublicPhaseBuilder;
+  serial<T>(items: readonly T[], factory: (item: T, i: number) => PublicSessionSpec): PublicPhaseBuilder;
+  phase(name: string): PublicPhaseBuilder;
+  phase(name: string, body: (ctx: PublicCtx) => void): PublicPhaseBuilder;
 }
 
 export interface TaskflowBuilder {
@@ -83,10 +88,11 @@ export interface TaskflowBuilder {
 
 // ---------------------------------------------------------------------------
 // Internal tree model (captured during the synchronous build phase).
+// Uses the public vocabulary (phase/session) for internal consistency.
 // ---------------------------------------------------------------------------
 
-type LeafNode = {
-  kind: 'leaf';
+type SessionNode = {
+  kind: 'session';
   id: string;
   spec: EngineLeafSpec;
 };
@@ -95,18 +101,18 @@ type GroupNode = {
   kind: 'group';
   /** 'parallel' runs children concurrently; 'serial' runs them one at a time. */
   mode: 'parallel' | 'serial';
-  children: LeafNode[];
+  children: SessionNode[];
 };
 
-type StageNode = {
-  kind: 'stage';
+type PhaseNode = {
+  kind: 'phase';
   name: string;
-  children: Array<StageNode | LeafNode | GroupNode>;
+  children: Array<PhaseNode | SessionNode | GroupNode>;
 };
 
 type RootNode = {
   kind: 'root';
-  children: Array<StageNode | LeafNode | GroupNode>;
+  children: Array<PhaseNode | SessionNode | GroupNode>;
 };
 
 // ---------------------------------------------------------------------------
@@ -125,7 +131,7 @@ export function parseWith(s: string): { agent: AgentName; model?: string } {
   return { agent: agent as AgentName, model: model === '' ? undefined : model };
 }
 
-function toEngineSpec(id: string, p: PublicLeafSpec): EngineLeafSpec {
+function toEngineSpec(id: string, p: PublicSessionSpec): EngineLeafSpec {
   const { agent, model } = parseWith(p.with);
   const spec: EngineLeafSpec = {
     id,
@@ -139,20 +145,20 @@ function toEngineSpec(id: string, p: PublicLeafSpec): EngineLeafSpec {
   return spec;
 }
 
-// Normalise `.parallel/.serial` factory args into a LeafNode[] list. Handles
+// Normalise `.parallel/.serial` factory args into a SessionNode[] list. Handles
 // both overloads: (count, factory) and (items, factory).
-function buildFactoryLeaves(
+function buildFactorySessions(
   countOrItems: number | readonly unknown[],
-  factory: (a: unknown, i: number) => PublicLeafSpec,
-): LeafNode[] {
+  factory: (a: unknown, i: number) => PublicSessionSpec,
+): SessionNode[] {
   const items: readonly unknown[] = typeof countOrItems === 'number'
     ? Array.from({ length: countOrItems }, (_, i) => i)
     : countOrItems;
-  const out: LeafNode[] = [];
+  const out: SessionNode[] = [];
   items.forEach((item, i) => {
     const spec = factory(item, i);
     if (!spec.id) throw new Error('parallel/serial factory must return a spec with an "id" field');
-    out.push({ kind: 'leaf', id: spec.id, spec: toEngineSpec(spec.id, spec) });
+    out.push({ kind: 'session', id: spec.id, spec: toEngineSpec(spec.id, spec) });
   });
   return out;
 }
@@ -166,9 +172,9 @@ class Builder {
   private envVars?: Record<string, string>;
   private root: RootNode = { kind: 'root', children: [] };
 
-  // Tracks the current "parent container" while a synchronous `stage(name, cb)`
+  // Tracks the current "parent container" while a synchronous `phase(name, cb)`
   // callback is executing. Top-of-stack is where new children go.
-  private stageStack: Array<RootNode | StageNode> = [this.root];
+  private phaseStack: Array<RootNode | PhaseNode> = [this.root];
 
   constructor(private readonly name: string) {}
 
@@ -183,105 +189,105 @@ class Builder {
   }
 
   // Any new child goes to the current top-of-stack container.
-  private currentParent(): RootNode | StageNode {
-    return this.stageStack[this.stageStack.length - 1]!;
+  private currentParent(): RootNode | PhaseNode {
+    return this.phaseStack[this.phaseStack.length - 1]!;
   }
 
-  private pushChild(child: StageNode | LeafNode | GroupNode): void {
+  private pushChild(child: PhaseNode | SessionNode | GroupNode): void {
     this.currentParent().children.push(child);
   }
 
-  // Build a StageBuilder handle for a StageNode already attached to its parent.
-  private makeStageBuilder(node: StageNode): PublicStageBuilder {
+  // Build a PhaseBuilder handle for a PhaseNode already attached to its parent.
+  private makePhaseBuilder(node: PhaseNode): PublicPhaseBuilder {
     const self = this;
-    const sb: PublicStageBuilder = {
-      leaf(id: string, spec: PublicLeafSpec): PublicStageBuilder {
-        node.children.push({ kind: 'leaf', id, spec: toEngineSpec(id, spec) });
-        return sb;
+    const pb: PublicPhaseBuilder = {
+      session(id: string, spec: PublicSessionSpec): PublicPhaseBuilder {
+        node.children.push({ kind: 'session', id, spec: toEngineSpec(id, spec) });
+        return pb;
       },
       parallel(
         countOrItems: number | readonly unknown[],
-        factory: (a: any, i: number) => PublicLeafSpec,
-      ): PublicStageBuilder {
-        const leaves = buildFactoryLeaves(countOrItems, factory);
-        node.children.push({ kind: 'group', mode: 'parallel', children: leaves });
-        return sb;
+        factory: (a: any, i: number) => PublicSessionSpec,
+      ): PublicPhaseBuilder {
+        const sessions = buildFactorySessions(countOrItems, factory);
+        node.children.push({ kind: 'group', mode: 'parallel', children: sessions });
+        return pb;
       },
       serial(
         countOrItems: number | readonly unknown[],
-        factory: (a: any, i: number) => PublicLeafSpec,
-      ): PublicStageBuilder {
-        const leaves = buildFactoryLeaves(countOrItems, factory);
-        node.children.push({ kind: 'group', mode: 'serial', children: leaves });
-        return sb;
+        factory: (a: any, i: number) => PublicSessionSpec,
+      ): PublicPhaseBuilder {
+        const sessions = buildFactorySessions(countOrItems, factory);
+        node.children.push({ kind: 'group', mode: 'serial', children: sessions });
+        return pb;
       },
-      stage(childName: string, body?: (ctx: PublicCtx) => void): PublicStageBuilder {
-        const child: StageNode = { kind: 'stage', name: childName, children: [] };
+      phase(childName: string, body?: (ctx: PublicCtx) => void): PublicPhaseBuilder {
+        const child: PhaseNode = { kind: 'phase', name: childName, children: [] };
         node.children.push(child);
         if (body) {
-          self.stageStack.push(child);
+          self.phaseStack.push(child);
           try {
             body(self.makePublicCtx());
           } finally {
-            self.stageStack.pop();
+            self.phaseStack.pop();
           }
-          return sb;
+          return pb;
         }
-        return self.makeStageBuilder(child);
+        return self.makePhaseBuilder(child);
       },
     };
-    return sb;
+    return pb;
   }
 
   private makePublicCtx(): PublicCtx {
     const self = this;
-    // Overloaded stage — return StageBuilder when no body, void when body passed.
-    function stage(name: string): PublicStageBuilder;
-    function stage(name: string, body: (ctx: PublicCtx) => void): void;
-    function stage(name: string, body?: (ctx: PublicCtx) => void): PublicStageBuilder | void {
-      const node: StageNode = { kind: 'stage', name, children: [] };
+    // Overloaded phase — return PhaseBuilder when no body, void when body passed.
+    function phase(name: string): PublicPhaseBuilder;
+    function phase(name: string, body: (ctx: PublicCtx) => void): void;
+    function phase(name: string, body?: (ctx: PublicCtx) => void): PublicPhaseBuilder | void {
+      const node: PhaseNode = { kind: 'phase', name, children: [] };
       self.pushChild(node);
       if (body) {
-        self.stageStack.push(node);
+        self.phaseStack.push(node);
         try {
           body(self.makePublicCtx());
         } finally {
-          self.stageStack.pop();
+          self.phaseStack.pop();
         }
         return;
       }
-      return self.makeStageBuilder(node);
+      return self.makePhaseBuilder(node);
     }
 
-    const leaf = (id: string, spec: PublicLeafSpec): void => {
-      self.pushChild({ kind: 'leaf', id, spec: toEngineSpec(id, spec) });
+    const session = (id: string, spec: PublicSessionSpec): void => {
+      self.pushChild({ kind: 'session', id, spec: toEngineSpec(id, spec) });
     };
 
     const parallel = (thunks: Array<() => void>): void => {
-      // Collect leaves emitted by each thunk into a single parallel group.
+      // Collect sessions emitted by each thunk into a single parallel group.
       const group: GroupNode = { kind: 'group', mode: 'parallel', children: [] };
-      // Temporarily redirect `pushChild` into the group by pushing a pseudo-stage.
-      // Simpler: we rely on the convention that thunks call ctx.leaf(...) which
-      // appends to currentParent(). So we push the group's children array via
-      // a synthetic StageNode proxy.
-      const proxy: StageNode = { kind: 'stage', name: '__parallel__', children: [] };
-      self.stageStack.push(proxy);
+      // Temporarily redirect `pushChild` into the group by pushing a pseudo-phase.
+      // Simpler: we rely on the convention that thunks call ctx.session(...)
+      // which appends to currentParent(). So we push the group's children array
+      // via a synthetic PhaseNode proxy.
+      const proxy: PhaseNode = { kind: 'phase', name: '__parallel__', children: [] };
+      self.phaseStack.push(proxy);
       try {
         for (const thunk of thunks) thunk();
       } finally {
-        self.stageStack.pop();
+        self.phaseStack.pop();
       }
-      // Only LeafNodes are valid inside a top-level parallel — flatten.
+      // Only SessionNodes are valid inside a top-level parallel — flatten.
       for (const child of proxy.children) {
-        if (child.kind !== 'leaf') {
-          throw new Error('top-level parallel(thunks) may only contain leaves');
+        if (child.kind !== 'session') {
+          throw new Error('top-level parallel(thunks) may only contain sessions');
         }
         group.children.push(child);
       }
       self.pushChild(group);
     };
 
-    return { stage, leaf, parallel };
+    return { phase, session, parallel };
   }
 
   async run(
@@ -324,22 +330,22 @@ class Builder {
 
 async function walkChildren(
   h: Ctx,
-  nodes: Array<StageNode | LeafNode | GroupNode>,
+  nodes: Array<PhaseNode | SessionNode | GroupNode>,
 ): Promise<void> {
   for (const n of nodes) {
-    if (n.kind === 'leaf') {
+    if (n.kind === 'session') {
       await engineLeaf(h, n.spec);
-    } else if (n.kind === 'stage') {
+    } else if (n.kind === 'phase') {
       await engineStage(h, n.name, () => walkChildren(h, n.children));
     } else {
       // group
       if (n.mode === 'parallel') {
         await engineParallel(
           h,
-          n.children.map((leaf) => () => engineLeaf(h, leaf.spec)),
+          n.children.map((s) => () => engineLeaf(h, s.spec)),
         );
       } else {
-        for (const leaf of n.children) await engineLeaf(h, leaf.spec);
+        for (const s of n.children) await engineLeaf(h, s.spec);
       }
     }
   }
@@ -373,4 +379,4 @@ export function _buildTree(name: string, fn: (ctx: PublicCtx) => void): RootNode
   return new Builder(name).buildTreeOnly(fn);
 }
 
-export type { RootNode as _RootNode, StageNode as _StageNode, LeafNode as _LeafNode, GroupNode as _GroupNode };
+export type { RootNode as _RootNode, PhaseNode as _PhaseNode, SessionNode as _SessionNode, GroupNode as _GroupNode };
