@@ -90,8 +90,8 @@ const piAdapter: AgentAdapter = {
 
     // Buffered assistant content, keyed by turn id (or '_' when pi omits it).
     const turnBuffers = new Map<string, string>();
-    const keyFor = (turn: string | number | undefined): string =>
-      turn === undefined || turn === null ? '_' : String(turn);
+    const keyFor = (turn: unknown): string =>
+      typeof turn === 'string' || typeof turn === 'number' ? String(turn) : '_';
 
     let doneEmitted = false;
     let aborted = false;
