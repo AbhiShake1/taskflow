@@ -1,0 +1,10 @@
+name: repeat-fixture
+root:
+  stage: root
+  steps:
+    - stage: retry
+      repeat: 2
+      steps:
+        - leaf: attempt
+          agent: pi
+          task: "Try the thing."

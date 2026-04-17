@@ -1,0 +1,11 @@
+name: foreach-fixture
+root:
+  stage: root
+  steps:
+    - stage: greet
+      foreach: { items: ['alpha', 'beta'], as: name }
+      steps:
+        - leaf: "greet-{name}"
+          agent: claude-code
+          task: "Greet {name}"
+          claims: ["out/{name}.txt"]

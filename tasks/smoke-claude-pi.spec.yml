@@ -1,0 +1,21 @@
+name: smoke-claude-pi
+root:
+  stage: smoke
+  steps:
+    - leaf: write-hello
+      agent: claude-code
+      model: sonnet
+      task: |
+        Write the exact text "Hello from claude-code harness leaf." (with the trailing period, no quotes) to the file
+        data/smoke/hello.txt. Create parent directories if needed. Respond briefly with "done" when the file is written.
+      claims: ["data/smoke/hello.txt"]
+
+    - leaf: verify-hello
+      agent: pi
+      model: anthropic/claude-sonnet-4-6
+      task: |
+        Read data/smoke/hello.txt. If its content exactly equals "Hello from claude-code harness leaf." (trailing period,
+        trimmed of leading/trailing whitespace), write a JSON object to data/smoke/verify.json with keys ok (true) and
+        content (the file contents). Otherwise write a JSON object with keys ok (false), content (the file contents),
+        and expected (the expected string). Then respond with "verified".
+      claims: ["data/smoke/verify.json"]

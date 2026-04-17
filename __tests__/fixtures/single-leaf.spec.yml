@@ -1,0 +1,9 @@
+name: single-leaf
+root:
+  stage: root
+  steps:
+    - leaf: hello
+      agent: claude-code
+      model: sonnet
+      task: "Say hello"
+      claims: ["out/hello.txt"]

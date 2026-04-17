@@ -1,0 +1,13 @@
+name: parallel-expand
+root:
+  stage: root
+  steps:
+    - stage: fetch
+      parallel: true
+      expand: { count: 3, as: i }
+      steps:
+        - leaf: "shard-{i}"
+          agent: opencode
+          model: groq/llama-3.3-70b
+          task: "Fetch shard {i} of URLs."
+          claims: ["data/scraped/don/2026-04-17/shard-{i}/**"]

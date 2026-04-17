@@ -1,0 +1,14 @@
+name: smoke-parallel-claude
+root:
+  stage: parallel-smoke
+  parallel: true
+  expand: { count: 3, as: i }
+  steps:
+    - leaf: "worker-{i}"
+      agent: claude-code
+      model: sonnet
+      task: |
+        Write the single line "worker {i} reporting in" (no quotes, no trailing newline beyond the one line) to the file
+        at absolute path {cwd}/data/smoke/parallel/worker-{i}.txt. Create parent directories if needed. Respond briefly
+        with "done-{i}" when the file is written.
+      claims: ["data/smoke/parallel/worker-{i}/**"]

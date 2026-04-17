@@ -1,0 +1,22 @@
+name: smoke-claude
+root:
+  stage: smoke
+  steps:
+    - leaf: write-hello
+      agent: claude-code
+      model: sonnet
+      task: |
+        Write the exact text "Hello from claude-code harness leaf." (with the trailing period, no quotes) to the file at
+        absolute path {cwd}/data/smoke/hello.txt. Create parent directories if needed. Respond briefly with "done" when the
+        file is written.
+      claims: ["data/smoke/hello.txt"]
+
+    - leaf: verify-hello
+      agent: claude-code
+      model: sonnet
+      task: |
+        Read the file at absolute path {cwd}/data/smoke/hello.txt. If its content — trimmed of leading/trailing
+        whitespace — exactly equals the string "Hello from claude-code harness leaf.", write a JSON document to
+        {cwd}/data/smoke/verify.json whose top-level object has ok set to true and content set to the file's content.
+        Otherwise set ok to false and also include an expected field with the string above. Respond with "verified".
+      claims: ["data/smoke/verify.json"]
