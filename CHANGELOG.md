@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-04-18
+
+### Added
+- `SessionSpec.dependsOn?: string[]` — explicit DAG edges between sessions. Engine lazily registers each leaf's result promise on entry; dependers scheduled after dependees still resolve. Unknown ids throw; failed deps cascade.
+
+### Changed
+- `ctx.steer(text)` and `ctx.abort(reason)` inside hooks now fire their corresponding `beforeSteer/afterSteer` + `beforeAbort/afterAbort` hooks. Both honor `{ cancel: true }`; `beforeSteer` also honors `{ content: string }` mutation.
+- `onError` now fires on any engine-caught exception inside `leaf()` (previously only on stream `error` events). Returning `{ swallow: true }` resolves the leaf with a synthetic error-status `LeafResult` instead of rethrowing.
+- Verify-loop re-spawn path now re-resolves the adapter (`resolveCurrentAdapter(h, agent)`) so mid-session `_adapterOverride` swaps are observable on retry. Previously the captured adapter was reused.
+
 ## [0.1.3] - 2026-04-18
 
 ### Changed
