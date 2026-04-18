@@ -29,7 +29,7 @@ export type LeafSpec = {
   };
 };
 
-export type LeafStatus = 'pending' | 'running' | 'done' | 'error' | 'aborted' | 'timeout';
+export type LeafStatus = 'pending' | 'running' | 'done' | 'error' | 'aborted' | 'timeout' | 'plan';
 
 /**
  * Token-usage / cache-hit metadata surfaced by adapters that talk to an LLM API.

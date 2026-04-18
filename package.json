@@ -11,6 +11,7 @@
   },
   "scripts": {
     "run": "tsx runner/index.ts",
+    "plan": "tsx plan/cli.ts",
     "test": "vitest run",
     "test:real": "HARNESS_REAL_TESTS=1 vitest run"
   },

@@ -18,6 +18,12 @@ export type TreeNode = {
   children: string[];
   leafEvents: RunEvent[];
   childProgress?: { done: number; total: number };
+  /**
+   * Optional author-time hint text rendered on the node's tail. Currently only
+   * populated by plan mode to surface write-claim paths (e.g. "write: data/x.json").
+   * Absent at runtime.
+   */
+  planHint?: string;
 };
 
 export type TuiState = {
@@ -231,6 +237,7 @@ export function statusGlyph(status: TreeNodeStatus): string {
     case 'error': return '✗';
     case 'aborted':
     case 'timeout': return '⚠';
+    case 'plan': return '◯';
     default: return '·';
   }
 }

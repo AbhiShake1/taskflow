@@ -5,6 +5,7 @@ import { formatElapsed, statusGlyph } from './store';
 
 export type TreeViewProps = {
   state: TuiState;
+  hintText?: string;
 };
 
 function depth(node: TreeNode, nodes: Record<string, TreeNode>): number {
@@ -18,7 +19,8 @@ function depth(node: TreeNode, nodes: Record<string, TreeNode>): number {
 }
 
 function nodeLabel(node: TreeNode): string {
-  if (node.kind === 'stage' && node.childProgress) {
+  // In plan mode there is no runtime progress — suppress the (done/total) tag.
+  if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
     return `${node.id} (${node.childProgress.done}/${node.childProgress.total})`;
   }
   return node.id;
@@ -26,15 +28,20 @@ function nodeLabel(node: TreeNode): string {
 
 function nodeTail(node: TreeNode): string {
   const parts: string[] = [];
-  if (node.agent) parts.push(node.agent);
+  if (node.agent && node.agent !== 'unknown') parts.push(node.agent);
   if (node.model) parts.push(node.model);
-  parts.push(formatElapsed(node.startedAt, node.endedAt));
+  // Suppress elapsed for 'plan' status — there is no clock in plan mode.
+  if (node.status !== 'plan') {
+    parts.push(formatElapsed(node.startedAt, node.endedAt));
+  }
+  if (node.planHint) parts.push(node.planHint);
   return parts.join('  ');
 }
 
-export function TreeView({ state }: TreeViewProps): React.ReactElement {
+export function TreeView({ state, hintText }: TreeViewProps): React.ReactElement {
   const flat = state.getFlatTree();
   const selectedIdx = Math.min(state.selectedIdx, Math.max(0, flat.length - 1));
+  const hint = hintText ?? '[↑↓ nav  ⏎ drill-in  a abort-leaf  q quit]';
 
   return (
     <Box flexDirection="column">
@@ -60,7 +67,7 @@ export function TreeView({ state }: TreeViewProps): React.ReactElement {
         );
       })}
       <Box marginTop={1}>
-        <Text dimColor>[↑↓ nav  ⏎ drill-in  a abort-leaf  q quit]</Text>
+        <Text dimColor>{hint}</Text>
       </Box>
     </Box>
   );

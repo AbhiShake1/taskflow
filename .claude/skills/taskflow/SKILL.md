@@ -7,6 +7,35 @@ description: Author and run multi-agent orchestration harnesses with a async-awa
 
 A meta-tool for orchestrating parallel/sequential sessions, where each session runs one AI coding agent invocation. The agent and LLM model are chosen per-session, so cheap mechanical work runs on cheap models and stakes-high work runs on frontier models.
 
+## When authoring or editing tasks/*.ts — ALWAYS plan first
+
+After writing or editing any `.ts` file under `tasks/`, IMMEDIATELY run `npm run plan -- tasks/<name>.ts` and share the rendered phase/session tree back to the user before asking whether to execute. This is a hard rule — do not offer to run, do not assume shape, preview first.
+
+## Previewing before running
+
+```
+npm run plan -- tasks/<name>.ts
+```
+
+Renders an Ink tree of the phases/sessions the file would execute, without making any LLM calls or running the user's code. It walks the TypeScript AST, matches `taskflow(...).run(...)` → `phase(...)` → `session(...)` patterns, and shows everything in a `◯` (plan) state.
+
+Keys: `↑↓` navigate, `⏎` inspect a session (full task text, schema JSON, write claims, timeout), `q` to quit.
+
+Note the `--` in the npm invocation — it is required for argv to be passed through to the script.
+
+What is visible in each row:
+- session id, agent, model, `write: data/...` paths (inline on the tail)
+- `schema: <name>` when a zod schema is attached (inspect for the full JSON-Schema expansion)
+- `(parallel × N)` on phases that use `Promise.all([...map(...)])` over a literal array
+- `(dynamic id)` / `(fire-and-forget)` flags when the authoring pattern implies them
+
+Patterns that downgrade to `?` nodes (shown but flagged as "unknown"):
+- helper function calls the walker cannot resolve statically
+- `Promise.all([...])` over a non-literal, non-`.map` expression
+- object literals where `with:` or `task:` are not string-like
+
+Use plan mode to verify phase names, session ids, agent pairings, and write-disjointness at a glance before committing to a real run.
+
 ## Fluent authoring (primary API)
 
 Author a pipeline as a TypeScript file. `session(...)` is **async-await native** — each call returns a `Promise<T>` where `T` is inferred from an optional zod `schema`. Dependency graphs, fire-and-forget, and parallelism are all just ordinary JS control flow.
