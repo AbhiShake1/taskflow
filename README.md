@@ -56,6 +56,47 @@ const result = await session('summary', {
 // result is typed: { title: string; bullets: string[] }
 ```
 
+## Plugins
+
+A plugin contributes hooks, a `ctx.plugins.<name>` namespace, and optional config fragments:
+
+```ts
+import type { Plugin } from 'taskflow-sdk/core';
+
+export const myPlugin: Plugin = () => ({
+  name: 'my-plugin',
+  events: {
+    afterTaskDone: async (ctx, { spec }) => { /* ... */ },
+  },
+  ctx: () => ({ hello: () => 'world' }),
+});
+```
+
+To get typed access to `ctx.plugins.myPlugin.hello()` in downstream hooks, module-augment the plugin namespace registry:
+
+```ts
+declare module 'taskflow-sdk/core' {
+  interface PluginNamespaces {
+    'my-plugin': { hello: () => string };
+  }
+}
+```
+
+See [`examples/omai-plugin-starter/`](./examples/omai-plugin-starter/) for a fuller scaffold (screen capture + UI-TARS wiring stubs).
+
+## Environment variables
+
+| Var | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | Required for `claude-code` sessions and `pi:anthropic/*`. |
+| `OPENAI_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `GEMINI_API_KEY` | Required per-session for the respective providers. |
+| `HARNESS_PI_BIN` | Override the `pi` binary name (default `pi`). Use `omp` with `@oh-my-pi/pi-coding-agent`. |
+| `HARNESS_CODEX_SCHEMA` | `0` forces prompt-engineered JSON for codex; `1` forces native `--output-schema`. |
+| `HARNESS_ADAPTER_OVERRIDE=mock` | Swap every agent for the mock adapter — smoke runs with zero token cost. |
+| `HARNESS_NO_TTY=1` | Force headless JSONL output even when a TTY is attached. |
+| `HARNESS_RUNS_DIR=...` | Override the runs archive directory (default `data/runs`). |
+| `HARNESS_REAL_TESTS=1` | Enable integration tests that make real LLM calls (default-skipped). |
+
 ## Docs
 
 See [.claude/skills/taskflow/SKILL.md](./.claude/skills/taskflow/SKILL.md) for the authoring guide.
