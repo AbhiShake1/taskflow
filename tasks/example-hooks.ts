@@ -11,6 +11,13 @@
 //   - verifyTaskComplete hook (gates the verify-loop on todos)
 //   - afterTaskDone hook that calls ctx.phase + ctx.session (hook-spawned chain)
 //   - HARNESS_ADAPTER_OVERRIDE=mock to substitute every agent with the mock
+//   - dependsOn DAG: three sessions spawned concurrently via Promise.all, with
+//     the third (`merge`) declaring `dependsOn: ['plan-a','plan-b']` so the
+//     engine holds its entry until both predecessors resolve. The existing
+//     verifyTaskComplete hook still fires per-session and gates the verify
+//     loop on todos — each DAG session completes in its first or second turn,
+//     but `merge` doesn't even begin draining events until after `plan-a` and
+//     `plan-b` emit their `done` events.
 //
 // Wiring note: there is no programmatic config-mount on the public taskflow
 // builder — config is normally discovered via a `.agents/taskflow/config.ts`
@@ -132,5 +139,28 @@ export default await taskflow('example-hooks').run(async ({ phase, session }) =>
       with: 'claude-code',
       task: 'Do the thing.\n\n- [ ] step one\n- [ ] step two',
     });
+  });
+
+  await phase('dag-demo', async () => {
+    // All three sessions are spawned concurrently. `merge` declares
+    // dependsOn: ['plan-a','plan-b'] so the engine lazy-registers the three
+    // leaf promises on entry, then blocks `merge` inside leaf() until both
+    // predecessors resolve — even though Promise.all dispatches them at the
+    // same instant.
+    await Promise.all([
+      session('plan-a', {
+        with: 'claude-code',
+        task: 'Plan step A\n\n- [ ] produce plan',
+      }),
+      session('plan-b', {
+        with: 'claude-code',
+        task: 'Plan step B\n\n- [ ] produce plan',
+      }),
+      session('merge', {
+        with: 'claude-code',
+        task: 'Merge A+B',
+        dependsOn: ['plan-a', 'plan-b'],
+      }),
+    ]);
   });
 });
