@@ -188,7 +188,7 @@ Taskflow auto-discovers a project-local config file at `.agents/taskflow/config.
 
 ```ts
 // .agents/taskflow/config.ts
-import { defineConfig } from '@onfire/taskflow/core/config';
+import { defineConfig } from 'taskflow-sdk/core/config';
 
 export default defineConfig({
   // Hooks. Any subset of HookHandlers. See "Lifecycle hooks" below.
@@ -222,7 +222,7 @@ export default defineConfig({
 
 Defaults (see `core/config.ts` `DEFAULT_CONFIG`): `autoExtract: true`, `maxRetries: 3`, `errorPolicy: 'swallow'`, `timeoutMs: 30_000`, `forceGeneration: false`. `scope` is undefined.
 
-> **Until published:** `@onfire/taskflow` is the upcoming published name. While developing inside this repo, import from relative paths: `import { defineConfig } from '../core/config';` or `import type { HookHandlers } from '../core/hooks';`.
+> **Until published:** `taskflow-sdk` is the upcoming published name. While developing inside this repo, import from relative paths: `import { defineConfig } from '../core/config';` or `import type { HookHandlers } from '../core/hooks';`.
 
 ## Lifecycle hooks
 
@@ -345,7 +345,7 @@ These are the SAME fluent API as the top-level `session(...)` / `phase(...)` you
 
 ```ts
 // .agents/taskflow/config.ts
-import { defineConfig } from '@onfire/taskflow/core/config';
+import { defineConfig } from 'taskflow-sdk/core/config';
 
 export default defineConfig({
   events: {
@@ -489,13 +489,13 @@ interface PluginContribution {
 
 ```ts
 // my-plugin.ts
-import type { Plugin } from '@onfire/taskflow/core/plugin';
+import type { Plugin } from 'taskflow-sdk/core/plugin';
 
 export interface AuditApi {
   trail: (msg: string) => Promise<void>;
 }
 
-declare module '@onfire/taskflow/core/hooks' {
+declare module 'taskflow-sdk/core/hooks' {
   interface PluginNamespaces {
     audit: AuditApi;
   }
@@ -521,7 +521,7 @@ Mount it from config:
 
 ```ts
 // .agents/taskflow/config.ts
-import { defineConfig } from '@onfire/taskflow/core/config';
+import { defineConfig } from 'taskflow-sdk/core/config';
 import { auditPlugin } from './plugins/audit';
 
 export default defineConfig({
