@@ -1047,4 +1047,121 @@ describe('lifecycle: dependsOn DAG wiring', () => {
     expect(spawns['c']!).toBeGreaterThanOrEqual(dones['a']!);
     expect(spawns['c']!).toBeGreaterThanOrEqual(dones['b']!);
   });
+
+  it('dependsOn cycle is detected and throws with the cycle path', async () => {
+    const runId = 'cycle-test';
+    await expect(
+      harness(
+        'cycle',
+        {
+          runsDir,
+          runId,
+          adapterOverride: async () => createMockAdapter({ turns: [{ assistantText: 'ok' }] }),
+        },
+        async (h) => {
+          // Register A first (A dependsOn B); when B is registered below with
+          // dependsOn ['A'], cycle detection walks B's deps → A → A's deps
+          // → B → hits startId=B and reports the cycle.
+          const aPromise = leaf(h, { id: 'a', agent: 'claude-code', task: 'a', dependsOn: ['b'] }).catch(() => {});
+          // Tiny delay so A's registration lands in _leafDeps before B checks.
+          await new Promise((r) => setTimeout(r, 5));
+          await leaf(h, { id: 'b', agent: 'claude-code', task: 'b', dependsOn: ['a'] });
+          await aPromise;
+        },
+      ),
+    ).rejects.toThrow(/dependsOn forms a cycle/);
+  });
+});
+
+describe('lifecycle: onError at harness + phase scope', () => {
+  it('onError fires when a phase body throws and can swallow to convert to done', async () => {
+    const runId = 'on-error-phase';
+    let onErrorCalled = 0;
+
+    await harness(
+      'on-error-phase',
+      {
+        runsDir,
+        runId,
+        adapterOverride: async () => createMockAdapter({ turns: [{ assistantText: 'ok' }] }),
+      },
+      async (h) => {
+        const reg = new HookRegistry({ errorPolicy: 'throw', timeoutMs: 5000 });
+        reg.register('onError', async () => {
+          onErrorCalled += 1;
+          return { swallow: true };
+        });
+        h.hooks = reg;
+        await stage(h, 'boom', async () => {
+          throw new Error('phase boom');
+        });
+      },
+    );
+
+    expect(onErrorCalled).toBeGreaterThanOrEqual(1);
+  });
+
+  it('onError fires when the harness body itself throws and can swallow', async () => {
+    const runId = 'on-error-harness';
+    let onErrorCalled = 0;
+
+    await harness(
+      'on-error-harness',
+      {
+        runsDir,
+        runId,
+        adapterOverride: async () => createMockAdapter({ turns: [{ assistantText: 'ok' }] }),
+      },
+      async (h) => {
+        // The harness captured its own hooks registry reference before body();
+        // to influence harness-scope onError we register on the SAME registry
+        // (h.hooks === that closure-captured registry) rather than replacing it.
+        h.hooks!.register('onError', async () => {
+          onErrorCalled += 1;
+          return { swallow: true };
+        });
+        throw new Error('harness-level boom');
+      },
+    );
+
+    expect(onErrorCalled).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('lifecycle: forceGeneration generationPreamble {{items}} substitution', () => {
+  it('substitutes {{items}} with a formatted checklist of mandatory items', async () => {
+    const runId = 'force-gen-items';
+    let observedTask: string | undefined;
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+
+    await harness(
+      'force-gen-items',
+      {
+        runsDir,
+        runId,
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        const reg = new HookRegistry({ errorPolicy: 'throw', timeoutMs: 5000 });
+        reg.register('collectTodos', async () => ['first item', 'second item']);
+        reg.register('beforeSpawn', async (_ctx, { spec }) => {
+          observedTask = spec.task;
+        });
+        h.hooks = reg;
+        h.config = {
+          ...DEFAULT_CONFIG,
+          todos: {
+            ...DEFAULT_CONFIG.todos,
+            forceGeneration: true,
+            generationPreamble: 'CUSTOM PREAMBLE\n{{items}}\nEND',
+          },
+        };
+        await leaf(h, { id: 'l', agent: 'claude-code', task: 'original task body' });
+      },
+    );
+
+    expect(observedTask).toBeDefined();
+    expect(observedTask!.startsWith('CUSTOM PREAMBLE\n- [ ] first item\n- [ ] second item\nEND')).toBe(true);
+    expect(observedTask!).toContain('original task body');
+  });
 });

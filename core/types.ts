@@ -131,4 +131,6 @@ export type Ctx = {
   _pluginCtxBuilders?: import('./plugin').ComposedPluginCtxBuilder[];
   /** Internal: per-leaf promises keyed by spec.id, used for dependsOn wiring. */
   _leafPromises?: Map<string, Promise<LeafResult>>;
+  /** Internal: per-leaf dependsOn lists keyed by spec.id, used for cycle detection. */
+  _leafDeps?: Map<string, string[]>;
 };

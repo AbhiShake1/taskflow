@@ -128,6 +128,7 @@ export async function harness(
     _harnessName: name,
     _pluginCtxBuilders: composed.ctxBuilders,
     _leafPromises: new Map<string, Promise<LeafResult>>(),
+    _leafDeps: new Map<string, string[]>(),
   };
 
   // Build a baseline HookCtx for harness/phase scope (no session yet).
@@ -175,6 +176,11 @@ export async function harness(
     await body(ctx);
   } catch (e) {
     threw = e;
+    if (hooks.has('onError')) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      const ret = await hooks.fire('onError', baseHookCtx(), { error: err });
+      if (ret && (ret as { swallow?: boolean }).swallow) threw = undefined;
+    }
   }
   const endedAt = Date.now();
 
@@ -233,6 +239,14 @@ export async function stage(h: Ctx, id: string, body: () => Promise<void>): Prom
   } catch (e) {
     status = 'error';
     threw = e;
+    if (hooks?.has('onError')) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      const ret = await hooks.fire('onError', buildHookCtx(h, { hookName: 'onError', phaseScope: { id, stack: h.stageStack.slice() } }), { error: err });
+      if (ret && (ret as { swallow?: boolean }).swallow) {
+        threw = undefined;
+        status = 'done';
+      }
+    }
   } finally {
     h.bus.publish({ t: 'stage-exit', stageId: id, status, ts: Date.now() });
     if (fireAfter) {
@@ -244,6 +258,33 @@ export async function stage(h: Ctx, id: string, body: () => Promise<void>): Prom
   }
 
   if (threw !== undefined) throw threw;
+}
+
+function detectCycle(
+  startId: string,
+  startDeps: string[],
+  depsMap: Map<string, string[]> | undefined,
+): string[] | null {
+  if (!depsMap) return null;
+  const deps = depsMap;
+  const visited = new Set<string>();
+  function walk(nodeId: string, path: string[]): string[] | null {
+    if (nodeId === startId) return [...path, startId];
+    if (visited.has(nodeId)) return null;
+    visited.add(nodeId);
+    const next = deps.get(nodeId);
+    if (!next) return null;
+    for (const d of next) {
+      const found = walk(d, [...path, nodeId]);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const d of startDeps) {
+    const found = walk(d, [startId]);
+    if (found) return found;
+  }
+  return null;
 }
 
 function checkClaimConflicts(h: Ctx, spec: LeafSpec): void {
@@ -614,6 +655,14 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
   // Await declared dependencies BEFORE claim-conflict checks so a dep that
   // releases its claims on completion doesn't collide with us.
   if (spec.dependsOn && spec.dependsOn.length > 0) {
+    h._leafDeps?.set(spec.id, spec.dependsOn.slice());
+    const cycle = detectCycle(spec.id, spec.dependsOn, h._leafDeps);
+    if (cycle) {
+      h._leafDeps?.delete(spec.id);
+      const err = new Error(`leaf "${spec.id}" dependsOn forms a cycle: ${cycle.join(' → ')}`);
+      rejectMyPromise(err);
+      throw err;
+    }
     const depPromises: Array<Promise<LeafResult>> = [];
     for (const id of spec.dependsOn) {
       const p = h._leafPromises?.get(id);
