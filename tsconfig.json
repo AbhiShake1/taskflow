@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "dist", "data"]
+  "exclude": ["node_modules", "dist", "data", "examples"]
 }
