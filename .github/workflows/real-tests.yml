@@ -1,0 +1,49 @@
+# Real-LLM test workflow
+# Trigger: weekly cron (Mondays 09:00 UTC) + manual dispatch.
+# Purpose: run the HARNESS_REAL_TESTS-gated suite against real providers so
+#   the adapters + real prompt pipeline don't bitrot silently. Requires
+#   ANTHROPIC_API_KEY repo secret. Skips with a clear message if the secret
+#   is absent so fork runs don't spam noise.
+
+name: Real-LLM tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1'
+
+jobs:
+  real:
+    name: Run real-LLM smoke suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for required secrets
+        id: secrets
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY secret not set — skipping real-LLM suite. Add the secret under Settings -> Secrets to enable."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run real-LLM tests
+        if: steps.secrets.outputs.skip == 'false'
+        env:
+          HARNESS_REAL_TESTS: '1'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx vitest run __tests__/real-*.test.ts
