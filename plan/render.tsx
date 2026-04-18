@@ -26,6 +26,7 @@ function formatSessionDetail(s: PlanSession): string {
   const w = [s.agent, s.model].filter(Boolean).join(':');
   if (w) lines.push(`with: ${w}`);
   if (s.write && s.write.length > 0) lines.push(`write: ${s.write.join(', ')}`);
+  if (s.dependsOn && s.dependsOn.length > 0) lines.push(`dependsOn: ${s.dependsOn.join(', ')}`);
   if (s.timeoutMs !== undefined) lines.push(`timeoutMs: ${s.timeoutMs}`);
   if (s.schemaName) {
     lines.push(`schema: ${s.schemaName}`);
@@ -76,6 +77,7 @@ function planToEvents(root: PlanRoot, hints: Map<string, string>): RunEvent[] {
       } as RunEvent);
       const parts: string[] = [];
       if (child.write && child.write.length > 0) parts.push(`write: ${child.write.join(', ')}`);
+      if (child.dependsOn && child.dependsOn.length > 0) parts.push(`⇠ ${child.dependsOn.join(', ')}`);
       if (child.schemaName) parts.push(`schema: ${child.schemaName}`);
       if (!child.awaited) parts.push('(fire-and-forget)');
       if (child.idIsDynamic) parts.push('(dynamic id)');

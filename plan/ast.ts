@@ -46,6 +46,7 @@ export interface PlanSession {
   schemaName?: string;
   schemaPreview?: string;
   awaited: boolean;
+  dependsOn?: string[];
 }
 
 export interface PlanUnknown {
@@ -462,6 +463,7 @@ function parseSessionCall(call: ts.CallExpression, ctx: WalkCtx, awaited: boolea
   if (model !== undefined) session.model = model;
   if (Array.isArray(spec.write)) session.write = spec.write.filter((x): x is string => typeof x === 'string');
   if (typeof spec.timeoutMs === 'number') session.timeoutMs = spec.timeoutMs;
+  if (spec.dependsOn && spec.dependsOn.length > 0) session.dependsOn = spec.dependsOn;
 
   // Schema: either an Identifier pointing at a module-scope z.object(...) or
   // an inline expression. Try to JSON-schema it.
@@ -648,6 +650,7 @@ interface ReadLiteral {
   timeoutMs?: number;
   rulesPrefix?: boolean;
   _schemaNode?: ts.Expression;
+  dependsOn?: string[];
 }
 
 function readObjectLiteral(obj: ts.ObjectLiteralExpression, ctx: WalkCtx): ReadLiteral {
@@ -673,6 +676,15 @@ function readObjectLiteral(obj: ts.ObjectLiteralExpression, ctx: WalkCtx): ReadL
       else if (val.kind === ts.SyntaxKind.FalseKeyword) out.rulesPrefix = false;
     } else if (key === 'schema') {
       out._schemaNode = val;
+    } else if (key === 'dependsOn') {
+      if (ts.isArrayLiteralExpression(val)) {
+        const ids: string[] = [];
+        for (const el of val.elements) {
+          const r = resolveStringLike(el, ctx);
+          if (!r.dynamic) ids.push(r.value);
+        }
+        if (ids.length > 0) out.dependsOn = ids;
+      }
     }
   }
   return out;
