@@ -172,6 +172,36 @@ describe('planFromFile: fire-and-forget detection', () => {
 // Render smoke: the Ink frame contains every key piece of the plan tree.
 // ---------------------------------------------------------------------------
 
+describe('renderPlan: dependsOn topological ordering', () => {
+  it('reorders sibling sessions so deps appear before dependents in the rendered tree', () => {
+    const src = `
+import { taskflow } from '../api/index';
+export default taskflow('dag-preview').run(async ({ session }) => {
+  await Promise.all([
+    session('merge', { with: 'claude-code', task: 'merge a+b', dependsOn: ['plan-a', 'plan-b'] }),
+    session('plan-a', { with: 'claude-code', task: 'plan a' }),
+    session('plan-b', { with: 'claude-code', task: 'plan b' }),
+  ]);
+});
+`;
+    const fixture = writeFixture('dag-preview.ts', src);
+    const root = planFromFile(fixture);
+    const { store, headerLine } = preparePlanStore(root);
+    const { lastFrame } = render(<PlanApp store={store} headerLine={headerLine} />);
+    const frame = lastFrame() ?? '';
+
+    const idxPlanA = frame.indexOf('plan-a');
+    const idxPlanB = frame.indexOf('plan-b');
+    const idxMerge = frame.indexOf('merge');
+    expect(idxPlanA).toBeGreaterThan(-1);
+    expect(idxPlanB).toBeGreaterThan(-1);
+    expect(idxMerge).toBeGreaterThan(-1);
+    expect(idxPlanA).toBeLessThan(idxMerge);
+    expect(idxPlanB).toBeLessThan(idxMerge);
+    expect(frame).toContain('⇠ plan-a, plan-b');
+  });
+});
+
 describe('renderPlan: Ink frame smoke', () => {
   it('renders pipeline.ts with every session id, agent/model, write path, and parallel count', () => {
     const root = planFromFile('tasks/pipeline.ts');

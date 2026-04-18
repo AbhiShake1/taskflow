@@ -41,6 +41,54 @@ function indent(text: string, pad: string): string {
   return text.split('\n').map(l => pad + l).join('\n');
 }
 
+// Reorder a phase's children so sessions with dependsOn on a sibling are
+// emitted after their predecessor. Non-session children and sessions with no
+// sibling edges keep their source-order position among themselves. If a
+// cycle is detected among siblings, remaining children emit in source order
+// (the engine will throw at runtime with the full cycle path).
+function toposortChildren(
+  children: readonly (PlanPhase | PlanSession | PlanUnknown)[],
+): (PlanPhase | PlanSession | PlanUnknown)[] {
+  const siblingIds = new Set<string>();
+  for (const c of children) if (c.kind === 'session') siblingIds.add(c.id);
+  const hasEdges = children.some(
+    (c) => c.kind === 'session' && !!c.dependsOn && c.dependsOn.some((d) => siblingIds.has(d)),
+  );
+  if (!hasEdges) return [...children];
+
+  const indeg = new Array<number>(children.length).fill(0);
+  children.forEach((c, i) => {
+    if (c.kind === 'session' && c.dependsOn) {
+      indeg[i] = c.dependsOn.filter((d) => siblingIds.has(d)).length;
+    }
+  });
+
+  const out: (PlanPhase | PlanSession | PlanUnknown)[] = [];
+  const emitted = new Set<number>();
+  while (out.length < children.length) {
+    let picked = -1;
+    for (let i = 0; i < children.length; i++) {
+      if (!emitted.has(i) && indeg[i] === 0) { picked = i; break; }
+    }
+    if (picked === -1) {
+      for (let i = 0; i < children.length; i++) if (!emitted.has(i)) { out.push(children[i]!); emitted.add(i); }
+      break;
+    }
+    const c = children[picked]!;
+    out.push(c);
+    emitted.add(picked);
+    if (c.kind === 'session') {
+      const emittedId = c.id;
+      children.forEach((c2, j) => {
+        if (!emitted.has(j) && c2.kind === 'session' && c2.dependsOn?.includes(emittedId)) {
+          indeg[j] = Math.max(0, indeg[j]! - 1);
+        }
+      });
+    }
+  }
+  return out;
+}
+
 function planToEvents(root: PlanRoot, hints: Map<string, string>): RunEvent[] {
   const evs: RunEvent[] = [];
   let ts = 1;
@@ -55,7 +103,7 @@ function planToEvents(root: PlanRoot, hints: Map<string, string>): RunEvent[] {
     if (child.kind === 'phase') {
       const displayName = phaseDisplayName(child);
       push({ t: 'stage-enter', stageId: displayName, parentId, ts: ts++ });
-      for (const g of child.children) walkChild(g, displayName);
+      for (const g of toposortChildren(child.children)) walkChild(g, displayName);
       // Intentionally no stage-exit — keeps phase in 'running'. We override
       // the status at render time below.
     } else if (child.kind === 'session') {
@@ -96,7 +144,7 @@ function planToEvents(root: PlanRoot, hints: Map<string, string>): RunEvent[] {
     }
   };
 
-  for (const c of root.children) walkChild(c, root.name);
+  for (const c of toposortChildren(root.children)) walkChild(c, root.name);
   return evs;
 }
 
