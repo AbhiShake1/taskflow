@@ -1,16 +1,14 @@
 # Release workflow
 # Trigger: pushing a semver tag of the form v*.*.* (e.g. v0.1.0, v1.2.3).
-# Auth: npm Trusted Publishing (OIDC). Configure the publisher on the npm
-#   package settings page pointing at AbhiShake1/taskflow + this workflow.
-#   No NPM_TOKEN secret needed.
+# Auth: classic npm Automation Token in the NPM_TOKEN repo secret.
 # Permissions:
 #   - contents: write   -> needed by softprops/action-gh-release to create the GitHub release.
-#   - id-token: write   -> needed for OIDC auth + npm publish --provenance (sigstore signing).
+#   - id-token: write   -> needed for npm publish --provenance (sigstore signing via OIDC).
 # Notes:
 #   - The workflow verifies that the pushed git tag matches package.json's version
 #     before publishing, so a mistagged release fails fast.
-#   - Trusted Publishing requires npm >= 11.5.1; we upgrade before the publish step
-#     because Node 20's bundled npm is 10.x.
+#   - Provenance works with token auth too; id-token:write is still required for
+#     sigstore signing, separate from registry auth.
 
 name: Release
 
@@ -59,11 +57,10 @@ jobs:
             exit 1
           fi
 
-      - name: Upgrade npm for Trusted Publishing support
-        run: npm install -g npm@latest
-
       - name: Publish to npm
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
