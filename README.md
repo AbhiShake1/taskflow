@@ -1,5 +1,11 @@
 # taskflow-sdk
 
+[![npm version](https://img.shields.io/npm/v/taskflow-sdk.svg)](https://www.npmjs.com/package/taskflow-sdk)
+[![CI](https://github.com/AbhiShake1/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/AbhiShake1/taskflow/actions/workflows/ci.yml)
+[![Release](https://github.com/AbhiShake1/taskflow/actions/workflows/release.yml/badge.svg)](https://github.com/AbhiShake1/taskflow/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node](https://img.shields.io/node/v/taskflow-sdk.svg)](https://nodejs.org/)
+
 Multi-agent orchestration harness for AI coding agents (claude-code, codex, cursor, opencode, pi). Async-await TypeScript API; lifecycle hooks; auto-todos with verify-loop.
 
 ## Install
