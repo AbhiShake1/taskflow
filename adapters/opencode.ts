@@ -256,6 +256,17 @@ const opencodeAdapter: AgentAdapter = {
           }, 2000);
         },
         wait: () => doneP,
+        // Path B: `opencode acp -p "<task>"` is one-shot — the binary emits its
+        // `done` ACP message and exits, and our wait()/finalize() chain only
+        // resolves on child 'exit'. Even though steer() pushes JSON-RPC mid-run,
+        // post-exit there is no live process to receive a follow-up message —
+        // re-spawn is the only honest path.
+        continueAfterDone: async (_text: string) => {
+          throw new Error(
+            'opencode: subprocess closed after terminal turn; continueAfterDone unavailable — engine should fallback to re-spawn',
+          );
+        },
+        supportsResume: false,
       };
     }
 

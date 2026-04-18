@@ -1,6 +1,8 @@
 import type { EventBus } from '../core/events';
 import type { AgentAdapter, AgentHandle } from '../adapters/index';
 import type { AgentName } from '../core/types';
+import type { HookHandlers, ResolvedConfig } from '../core/hooks';
+import type { Plugin } from '../core/plugin';
 
 /**
  * Runtime-wide context the harness runner uses to inject its own bus, runs
@@ -32,6 +34,14 @@ export type RunnerContext = {
    * runDir (or an SDK/CLI-created temp sandbox).
    */
   cwd?: string;
+  /**
+   * Pre-loaded taskflow config (events, todos, hooks, plugins) discovered by the
+   * runner via loadConfig() once at startup. When set, harness() skips its own
+   * loadConfig() call and inherits these.
+   */
+  config?: ResolvedConfig;
+  eventLayers?: Array<Partial<HookHandlers>>;
+  plugins?: Plugin[];
 };
 
 let current: RunnerContext | undefined;

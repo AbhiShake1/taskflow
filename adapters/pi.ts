@@ -336,6 +336,18 @@ const piAdapter: AgentAdapter = {
           // Don't wait on exit here — runtime consumers await wait() separately.
         },
         wait: () => doneP,
+        // Path B: pi/omp's RPC mode receives its prompt via `-p` argv (single-shot
+        // pattern) and exits when the agent emits `agent_end`; our wait() defers
+        // resolution to child 'exit' so by the time the engine could call
+        // continueAfterDone the subprocess is dead and the stdin pipe is closed.
+        // Even though steer() writes JSON-RPC mid-run, post-exit resume is not
+        // supported by the binary — re-spawn is the only honest path.
+        continueAfterDone: async (_text: string) => {
+          throw new Error(
+            'pi: subprocess closed after terminal turn; continueAfterDone unavailable — engine should fallback to re-spawn',
+          );
+        },
+        supportsResume: false,
       };
     }
 

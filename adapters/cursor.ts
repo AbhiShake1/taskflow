@@ -327,6 +327,17 @@ const cursorAdapter: AgentAdapter = {
           // Don't wait on exit here — runtime consumers await wait() separately.
         },
         wait: () => doneP,
+        // Path B: `cursor-agent -p "<task>"` is a one-shot stream-json invocation
+        // that exits when the agent emits its terminal `done`. Our finalize/wait()
+        // pair only resolves on child 'exit', so by the time the engine could
+        // resume the subprocess is gone and stdin is closed — re-spawn is the
+        // only honest path.
+        continueAfterDone: async (_text: string) => {
+          throw new Error(
+            'cursor: subprocess closed after terminal turn; continueAfterDone unavailable — engine should fallback to re-spawn',
+          );
+        },
+        supportsResume: false,
       };
     }
 

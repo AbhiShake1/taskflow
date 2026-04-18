@@ -8,11 +8,27 @@ import type {
   LeafSpec,
   LeafStatus,
   LeafSummary,
+  RunEvent,
 } from './types';
 import { claimsOverlap } from './claims';
 import { EventBus } from './events';
-import { resolveAdapter, type AgentAdapter, type SpawnCtx } from '../adapters/index';
+import { resolveAdapter, type AgentAdapter, type AgentHandle, type SpawnCtx } from '../adapters/index';
 import { getRunner } from '../runner/context';
+import {
+  HookRegistry,
+  createHookCtx,
+  noopLogger,
+  type HookCtx,
+  type HookHandlers,
+  type HookName,
+  type ResolvedConfig,
+  type Todo,
+} from './hooks';
+import { createScopedFs } from './scoped-fs';
+import { createProofApi } from './proof';
+import { createTodoStore, extractTodosFromMarkdown, type TodoStore } from './todos';
+import { applyPluginCtx, composePlugins, type Plugin } from './plugin';
+import { DEFAULT_CONFIG, loadConfig } from './config';
 
 export type HarnessOptions = {
   rulesFile?: string;
@@ -41,7 +57,6 @@ async function readRulesFile(p: string | undefined): Promise<string | undefined>
   try {
     return await readFile(abs, 'utf8');
   } catch {
-    // If rules file cannot be read, behave as if no rules were set.
     return undefined;
   }
 }
@@ -60,13 +75,43 @@ export async function harness(
   await mkdir(leavesDir, { recursive: true });
 
   const rules = await readRulesFile(opts.rulesFile);
-  // If a runner is registered, use its bus (file attachment + lifecycle is
-  // the runner's responsibility). Otherwise own the bus ourselves.
   const ownsBus = !runner;
   const bus = runner?.bus ?? new EventBus();
   if (ownsBus) {
     await bus.attachFile(join(runDir, 'events.jsonl'));
   }
+
+  // Resolve config + plugins. Runner may have pre-loaded these. When neither
+  // a runner-supplied config nor a discoverable .agents/taskflow/config.ts is
+  // present, we still build a registry off DEFAULT_CONFIG so hook firing is a
+  // safe no-op (no handlers registered → has(name) is false → engine skips).
+  let resolvedConfig: ResolvedConfig = runner?.config ?? DEFAULT_CONFIG;
+  let eventLayers: Array<Partial<HookHandlers>> = runner?.eventLayers ?? [];
+  let pluginList: Plugin[] = runner?.plugins ?? [];
+
+  if (!runner?.config) {
+    try {
+      const loaded = await loadConfig();
+      resolvedConfig = loaded.resolved;
+      eventLayers = loaded.eventLayers;
+      pluginList = loaded.plugins;
+    } catch {
+      // If config discovery throws (broken project file, etc.) fall back to
+      // defaults rather than nuke the whole run. The user's other tooling
+      // already surfaces config errors via the test suite's config tests.
+    }
+  }
+
+  const hooks = new HookRegistry({
+    errorPolicy: resolvedConfig.hooks.errorPolicy,
+    timeoutMs: resolvedConfig.hooks.timeoutMs,
+  });
+
+  // Plugin handlers BEFORE config handlers so project handlers run last and
+  // can mutate / observe plugin output (per plan's composition order).
+  const composed = await composePlugins(pluginList, { config: resolvedConfig });
+  if (Object.keys(composed.events).length > 0) hooks.mount(composed.events);
+  for (const layer of eventLayers) hooks.mount(layer);
 
   const ctx: Ctx = {
     runId,
@@ -78,7 +123,50 @@ export async function harness(
     _stageOrder: [],
     _activeClaims: new Map(),
     _adapterOverride: opts.adapterOverride,
+    hooks,
+    config: resolvedConfig,
+    _harnessName: name,
+    _pluginCtxBuilders: composed.ctxBuilders,
   };
+
+  // Build a baseline HookCtx for harness/phase scope (no session yet).
+  const baseHookCtx = (): HookCtx => {
+    const c = createHookCtx(
+      { hookName: 'beforeHarness' },
+      {
+        scope: { harness: name, runId, runDir },
+        bus,
+        config: resolvedConfig,
+        logger: noopLogger,
+        fs: createScopedFs(runDir),
+        fetch: globalThis.fetch,
+        todos: createTodoStore(),
+        proof: createProofApi(join(runDir, 'proof')),
+        plugins: {} as HookCtx['plugins'],
+        state: new Map<string, unknown>(),
+        emit: (ev: RunEvent) => { bus.publish(ev); },
+        steer: async () => {},
+        abort: async () => {},
+        session: async (id, spec) => {
+          const mod = await import('../api/index');
+          return mod.runSessionWithCtx(ctx, id, spec as unknown as Parameters<typeof mod.runSessionWithCtx>[2]);
+        },
+        phase: async (phaseName, body) => {
+          let result!: Awaited<ReturnType<typeof body>>;
+          await stage(ctx, phaseName, async () => {
+            result = await body();
+          });
+          return result;
+        },
+      },
+    );
+    if (composed.ctxBuilders.length > 0) applyPluginCtx(c, composed.ctxBuilders);
+    return c;
+  };
+
+  if (hooks.has('beforeHarness')) {
+    await hooks.fire('beforeHarness', baseHookCtx(), { name, runId, runDir });
+  }
 
   const startedAt = Date.now();
   let threw: unknown = undefined;
@@ -106,12 +194,17 @@ export async function harness(
   try {
     await writeFile(join(runDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
   } finally {
-    // Only close the bus if we created it. The runner owns its own bus.
     if (ownsBus) await bus.close();
   }
 
+  if (hooks.has('afterHarness')) {
+    const payload = threw instanceof Error
+      ? { manifest, error: threw }
+      : { manifest };
+    await hooks.fire('afterHarness', baseHookCtx(), payload);
+  }
+
   if (threw !== undefined) {
-    // We still surface the failure to the caller — the manifest is on disk.
     throw threw;
   }
 
@@ -122,6 +215,14 @@ export async function stage(h: Ctx, id: string, body: () => Promise<void>): Prom
   const parentId = h.stageStack[h.stageStack.length - 1];
   h.stageStack.push(id);
   h._stageOrder.push(id);
+
+  const hooks = h.hooks;
+  const fireBefore = hooks?.has('beforePhase');
+  const fireAfter = hooks?.has('afterPhase');
+
+  if (fireBefore) {
+    await hooks!.fire('beforePhase', buildHookCtx(h, { hookName: 'beforePhase', phaseScope: { id, stack: h.stageStack.slice() } }), { phaseId: id, parentId });
+  }
   h.bus.publish({ t: 'stage-enter', stageId: id, parentId, ts: Date.now() });
 
   let status: 'done' | 'error' = 'done';
@@ -133,6 +234,11 @@ export async function stage(h: Ctx, id: string, body: () => Promise<void>): Prom
     threw = e;
   } finally {
     h.bus.publish({ t: 'stage-exit', stageId: id, status, ts: Date.now() });
+    if (fireAfter) {
+      const payload: { phaseId: string; status: 'done' | 'error'; error?: Error } = { phaseId: id, status };
+      if (threw instanceof Error) payload.error = threw;
+      await hooks!.fire('afterPhase', buildHookCtx(h, { hookName: 'afterPhase', phaseScope: { id, stack: h.stageStack.slice() } }), payload);
+    }
     h.stageStack.pop();
   }
 
@@ -149,40 +255,404 @@ function checkClaimConflicts(h: Ctx, spec: LeafSpec): void {
   }
 }
 
+// Build a HookCtx anchored to the harness run + (optional) phase/session/event.
+// The HookRegistry overwrites `hookName` per-fire so we set it to the partial's
+// value if supplied, otherwise to a sentinel.
+//
+// Note on `session`/`phase`: these are intentionally bound to the SAME `h: Ctx`
+// as the parent. A hook handler that calls `ctx.session(...)` spawns a child
+// leaf that fires its own beforeSession / collectTodos / afterTaskDone, etc.
+// Recursion is bounded only by user code; the engine treats it as another
+// `leaf()` invocation (claims, manifest, bus events, hook firing all apply).
+function buildHookCtx(
+  h: Ctx,
+  partial: Partial<HookCtx> & { hookName: HookName },
+): HookCtx {
+  const harnessName = (h as Ctx & { _harnessName?: string })._harnessName ?? 't';
+  const config = h.config ?? DEFAULT_CONFIG;
+  const c = createHookCtx(
+    partial,
+    {
+      scope: { harness: harnessName, runId: h.runId, runDir: h.runDir },
+      bus: h.bus,
+      config,
+      logger: noopLogger,
+      fs: createScopedFs(h.runDir),
+      fetch: globalThis.fetch,
+      todos: (partial as { todos?: HookCtx['todos'] }).todos ?? createTodoStore(),
+      proof: createProofApi(join(h.runDir, 'proof')),
+      plugins: {} as HookCtx['plugins'],
+      state: new Map<string, unknown>(),
+      emit: (ev: RunEvent) => { h.bus.publish(ev); },
+      steer: async () => {},
+      abort: async () => {},
+      session: async (id, spec) => {
+        const mod = await import('../api/index');
+        return mod.runSessionWithCtx(h, id, spec as unknown as Parameters<typeof mod.runSessionWithCtx>[2]);
+      },
+      phase: async (name, body) => {
+        let result!: Awaited<ReturnType<typeof body>>;
+        await stage(h, name, async () => {
+          result = await body();
+        });
+        return result;
+      },
+    },
+  );
+  const builders = h._pluginCtxBuilders;
+  if (builders && builders.length > 0) applyPluginCtx(c, builders);
+  return c;
+}
+
+function formatRemaining(items: Array<Todo | string>): string {
+  if (items.length === 0) return 'Please complete the remaining work.';
+  const lines = items.map((it) => {
+    const text = typeof it === 'string' ? it : it.text;
+    return `- ${text}`;
+  });
+  return `Previously left undone:\n${lines.join('\n')}`;
+}
+
+type DrainHandle = {
+  promise: Promise<void>;
+};
+
+// Spawn → drain → wait. Extracted so the verify loop can re-run it after a
+// re-spawn fallback. The drain coroutine fires per-event hooks and applies
+// before-hook mutations / drops before publishing to the bus.
+async function spawnDrainWait(args: {
+  h: Ctx;
+  spec: LeafSpec;
+  spawnCtx: SpawnCtx;
+  adapter: AgentAdapter;
+  todoStore: TodoStore;
+  attempt: number;
+}): Promise<{ handle: AgentHandle; result: LeafResult; drain: DrainHandle; lastAssistantText?: string }> {
+  const { h, spec, spawnCtx, adapter, todoStore, attempt } = args;
+  const hooks = h.hooks;
+
+  if (hooks?.has('beforeSpawn')) {
+    const ret = await hooks.fire(
+      'beforeSpawn',
+      sessionHookCtx(h, spec, attempt, todoStore, undefined, 'beforeSpawn'),
+      { spec },
+    );
+    if (ret && ret.spec) Object.assign(spec, ret.spec);
+  }
+
+  const handle = adapter.spawn(spec, spawnCtx);
+
+  const runner = getRunner();
+  runner?.activeHandles.set(spec.id, handle);
+
+  if (hooks?.has('afterSpawn')) {
+    await hooks.fire(
+      'afterSpawn',
+      sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterSpawn'),
+      { spec, handle },
+    );
+  }
+
+  let lastAssistantText: string | undefined;
+  const drainState: { promise: Promise<void> } = { promise: Promise.resolve() };
+  drainState.promise = (async () => {
+    for await (const ev of handle.events as AsyncIterable<AgentEvent>) {
+      if (ev.t === 'message' && ev.role === 'assistant' && typeof ev.content === 'string' && ev.content.length > 0) {
+        lastAssistantText = ev.content;
+      }
+      const next = await applyEventHooks(h, spec, attempt, todoStore, handle, ev);
+      if (next === DROP_EVENT) continue;
+      h.bus.publish(next);
+      await fireAfterEventHook(h, spec, attempt, todoStore, handle, next);
+    }
+  })().catch(() => { /* surfaced via handle.wait() */ });
+
+  let result: LeafResult;
+  if (spec.timeoutMs && spec.timeoutMs > 0) {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>(res => {
+      timer = setTimeout(() => res('timeout'), spec.timeoutMs);
+    });
+    const winner = await Promise.race([handle.wait(), timedOut]);
+    if (timer) clearTimeout(timer);
+    if (winner === 'timeout') {
+      await handle.abort('timeout');
+      const original = await handle.wait();
+      result = { ...original, status: 'timeout' as LeafStatus };
+      h.bus.publish({ t: 'done', leafId: spec.id, result, ts: Date.now() });
+    } else {
+      result = winner as LeafResult;
+    }
+  } else {
+    result = await handle.wait();
+  }
+
+  await drainState.promise;
+
+  return { handle, result, drain: drainState, lastAssistantText };
+}
+
+const DROP_EVENT = Symbol('taskflow.dropEvent');
+type DropEvent = typeof DROP_EVENT;
+
+async function applyEventHooks(
+  h: Ctx,
+  spec: LeafSpec,
+  attempt: number,
+  todoStore: TodoStore,
+  handle: AgentHandle,
+  ev: AgentEvent,
+): Promise<AgentEvent | DropEvent> {
+  const hooks = h.hooks;
+  if (!hooks) return ev;
+
+  switch (ev.t) {
+    case 'message': {
+      if (!hooks.has('beforeMessage')) return ev;
+      const ret = await hooks.fire(
+        'beforeMessage',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'beforeMessage', ev),
+        { ev },
+      );
+      if (ret?.drop) return DROP_EVENT;
+      if (ret?.content !== undefined) return { ...ev, content: ret.content };
+      return ev;
+    }
+    case 'tool': {
+      if (!hooks.has('beforeToolCall')) return ev;
+      const ret = await hooks.fire(
+        'beforeToolCall',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'beforeToolCall', ev),
+        { ev },
+      );
+      if (ret?.skip) return DROP_EVENT;
+      if (ret?.args !== undefined) return { ...ev, args: ret.args };
+      return ev;
+    }
+    case 'tool-res': {
+      if (!hooks.has('beforeToolResult')) return ev;
+      const ret = await hooks.fire(
+        'beforeToolResult',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'beforeToolResult', ev),
+        { ev },
+      );
+      if (ret?.result !== undefined) return { ...ev, result: ret.result };
+      return ev;
+    }
+    case 'edit': {
+      if (!hooks.has('beforeEdit')) return ev;
+      await hooks.fire(
+        'beforeEdit',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'beforeEdit', ev),
+        { ev },
+      );
+      return ev;
+    }
+    case 'steer': {
+      if (!hooks.has('beforeSteer')) return ev;
+      const ret = await hooks.fire(
+        'beforeSteer',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'beforeSteer', ev),
+        { leafId: ev.leafId, content: ev.content },
+      );
+      if (ret?.cancel) return DROP_EVENT;
+      if (ret?.content !== undefined) return { ...ev, content: ret.content };
+      return ev;
+    }
+    case 'error': {
+      if (!hooks.has('onError')) return ev;
+      const err = new Error(ev.error);
+      const ret = await hooks.fire(
+        'onError',
+        sessionHookCtx(h, spec, attempt, todoStore, handle, 'onError', ev),
+        { leafId: ev.leafId, error: err },
+      );
+      if (ret?.swallow) return DROP_EVENT;
+      return ev;
+    }
+    default:
+      return ev;
+  }
+}
+
+async function fireAfterEventHook(
+  h: Ctx,
+  spec: LeafSpec,
+  attempt: number,
+  todoStore: TodoStore,
+  handle: AgentHandle,
+  ev: AgentEvent,
+): Promise<void> {
+  const hooks = h.hooks;
+  if (!hooks) return;
+  switch (ev.t) {
+    case 'message':
+      if (hooks.has('afterMessage')) {
+        await hooks.fire('afterMessage', sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterMessage', ev), { ev });
+      }
+      break;
+    case 'tool':
+      if (hooks.has('afterToolCall')) {
+        await hooks.fire('afterToolCall', sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterToolCall', ev), { ev });
+      }
+      break;
+    case 'tool-res':
+      if (hooks.has('afterToolResult')) {
+        await hooks.fire('afterToolResult', sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterToolResult', ev), { ev });
+      }
+      break;
+    case 'edit':
+      if (hooks.has('afterEdit')) {
+        await hooks.fire('afterEdit', sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterEdit', ev), { ev });
+      }
+      break;
+    case 'steer':
+      if (hooks.has('afterSteer')) {
+        await hooks.fire('afterSteer', sessionHookCtx(h, spec, attempt, todoStore, handle, 'afterSteer', ev), { leafId: ev.leafId, content: ev.content });
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function sessionHookCtx(
+  h: Ctx,
+  spec: LeafSpec,
+  attempt: number,
+  todoStore: TodoStore,
+  handle: AgentHandle | undefined,
+  hookName: HookName,
+  ev?: AgentEvent,
+): HookCtx {
+  return buildHookCtx(h, {
+    hookName,
+    sessionScope: { id: spec.id, spec, attempt },
+    handle,
+    event: ev,
+    todos: todoStore,
+  } as Partial<HookCtx> & { hookName: HookName; todos?: HookCtx['todos'] });
+}
+
 export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
-  // Runtime overlap check against in-flight siblings.
   checkClaimConflicts(h, spec);
   h._activeClaims.set(spec.id, spec.claims ?? []);
 
   try {
-    // Adapter-resolution priority:
-    //   1. spec-level override from HarnessOptions (emitted module or tests)
-    //   2. runner-level override (e.g. HARNESS_ADAPTER_OVERRIDE=mock from CLI)
-    //   3. real adapter for the agent name
     const runnerOverride = getRunner()?.adapterOverride;
-    const adapter = h._adapterOverride
+    let adapter: AgentAdapter = h._adapterOverride
       ? await h._adapterOverride(spec.agent)
       : runnerOverride
       ? await runnerOverride(spec.agent)
       : await resolveAdapter(spec.agent);
 
-    const rulesPrefixEnabled = spec.rulesPrefix !== false;
+    const config = h.config ?? DEFAULT_CONFIG;
+    const hooks = h.hooks;
+
+    // Build the per-session todo store, persisted to leaves/<id>/todos.json.
+    // Inline + (optional) auto-extracted markdown items both seed it.
+    const todoStore = createTodoStore({
+      persistPath: join(h.runDir, 'leaves', spec.id, 'todos.json'),
+      initial: spec.todos ?? [],
+    });
+    if (config.todos.autoExtract !== false) {
+      for (const t of extractTodosFromMarkdown(spec.task)) todoStore.add(t);
+    }
+
+    const mandatoryItems: string[] = [];
+    if (hooks?.has('collectTodos')) {
+      const ret = await hooks.fire(
+        'collectTodos',
+        sessionHookCtx(h, spec, 0, todoStore, undefined, 'collectTodos'),
+        { spec },
+      );
+      if (Array.isArray(ret)) {
+        for (const it of ret) {
+          if (typeof it === 'string' && it.length > 0) {
+            mandatoryItems.push(it);
+            todoStore.add(it);
+          }
+        }
+      }
+    }
+    await todoStore.flush();
+
+    const scopeText = (config.scope ?? '').trim();
+    const forceGen = config.todos.forceGeneration === true;
+    let augmentedTask = spec.task;
+    if (forceGen) {
+      const formattedItems = mandatoryItems.map((s) => `- [ ] ${s}`).join('\n');
+      const preambleTpl = config.todos.generationPreamble;
+      let preamble: string;
+      if (typeof preambleTpl === 'string') {
+        preamble = preambleTpl.replace('{{items}}', formattedItems);
+      } else if (mandatoryItems.length > 0) {
+        preamble = [
+          'Before doing anything else, output your task plan as a markdown checklist (`- [ ] item` lines). Cover ALL the work, then proceed.',
+          '',
+          'Your plan MUST include these items at minimum (do not omit them):',
+          formattedItems,
+          '',
+          'Once the plan is written, execute it.',
+          '',
+          '---',
+          '',
+        ].join('\n');
+      } else {
+        preamble = [
+          'Before doing anything else, output your task plan as a markdown checklist (`- [ ] item` lines). Cover ALL the work, then proceed.',
+          '',
+          'Once the plan is written, execute it.',
+          '',
+          '---',
+          '',
+        ].join('\n');
+      }
+      augmentedTask = `${preamble}\n${augmentedTask}`;
+    }
+    if (scopeText.length > 0) {
+      const scopeBlock = `Scope and constraints:\n${scopeText}\n\n---\n\n`;
+      augmentedTask = `${scopeBlock}${augmentedTask}`;
+    }
+
+    let workingSpec: LeafSpec = augmentedTask === spec.task ? spec : { ...spec, task: augmentedTask };
+
+    if (hooks?.has('beforeSession')) {
+      const ret = await hooks.fire(
+        'beforeSession',
+        sessionHookCtx(h, workingSpec, 0, todoStore, undefined, 'beforeSession'),
+        { spec: workingSpec },
+      );
+      if (ret?.skip) {
+        const skipResult: LeafResult = {
+          leafId: workingSpec.id,
+          status: 'done',
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+        };
+        const summary: LeafSummary = { id: workingSpec.id, status: 'done', durationMs: 0 };
+        h._leafRecords.push(summary);
+        if (hooks.has('afterSession')) {
+          await hooks.fire('afterSession', sessionHookCtx(h, workingSpec, 0, todoStore, undefined, 'afterSession'), { spec: workingSpec, result: skipResult });
+        }
+        return skipResult;
+      }
+      if (ret?.spec) workingSpec = ret.spec;
+    }
+
+    const rulesPrefixEnabled = workingSpec.rulesPrefix !== false;
     const spawnCtx: SpawnCtx = {
       runDir: h.runDir,
       rulesPrefix: rulesPrefixEnabled && h.rules
         ? `Rules:\n${h.rules}\n\nTask:\n`
         : undefined,
-      // Run the agent in the repo root (runner-provided) rather than runDir. Both
-      // claude-agent-sdk and omp (via `pi --allow-home`) sandbox to a temp dir when
-      // no cwd is supplied, so any files they write land outside the repo. Falling
-      // back to process.cwd() here matches the runner's default.
       cwd: getRunner()?.cwd ?? process.cwd(),
-      ...(spec.structuredOutput
+      ...(workingSpec.structuredOutput
         ? {
             structuredOutput: {
-              jsonSchema: spec.structuredOutput.jsonSchema,
-              ...(spec.structuredOutput._zodSchema !== undefined
-                ? { _zodSchema: spec.structuredOutput._zodSchema }
+              jsonSchema: workingSpec.structuredOutput.jsonSchema,
+              ...(workingSpec.structuredOutput._zodSchema !== undefined
+                ? { _zodSchema: workingSpec.structuredOutput._zodSchema }
                 : {}),
             },
           }
@@ -190,115 +660,208 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
     };
 
     const startedAt = Date.now();
-    const handle = adapter.spawn(spec, spawnCtx);
 
-    // Register this leaf's live handle with the runner (if any), so the TUI
-    // can route steer/abort keystrokes to it. Always cleaned up below.
-    const runner = getRunner();
-    runner?.activeHandles.set(spec.id, handle);
+    let attempt = 0;
+    let drainResult = await spawnDrainWait({
+      h, spec: workingSpec, spawnCtx, adapter, todoStore, attempt,
+    });
+    let handle: AgentHandle = drainResult.handle;
+    let result: LeafResult = drainResult.result;
+    let lastAssistantText: string | undefined = drainResult.lastAssistantText;
 
-    // Observe events as they stream in. Two purposes:
-    //   1. Publish them onto the run bus for downstream consumers.
-    //   2. Track the last assistant message text so the engine can backfill
-    //      `result.finalAssistantText` when the adapter didn't set it. Most
-    //      adapters already set it on their terminal `done`, but nothing
-    //      *requires* them to — this keeps the contract single-sourced here.
-    let lastAssistantText: string | undefined;
-    const drain = (async () => {
-      for await (const ev of handle.events as AsyncIterable<AgentEvent>) {
-        if (ev.t === 'message' && ev.role === 'assistant' && typeof ev.content === 'string' && ev.content.length > 0) {
-          lastAssistantText = ev.content;
-        }
-        h.bus.publish(ev);
-      }
-    })().catch(() => { /* already surfaced via handle.wait() */ });
-
-    // Race wait() against timeout.
-    let result: LeafResult;
-    if (spec.timeoutMs && spec.timeoutMs > 0) {
-      let timer: NodeJS.Timeout | undefined;
-      const timedOut = new Promise<'timeout'>(res => {
-        timer = setTimeout(() => res('timeout'), spec.timeoutMs);
-      });
-      const winner = await Promise.race([handle.wait(), timedOut]);
-      if (timer) clearTimeout(timer);
-      if (winner === 'timeout') {
-        await handle.abort('timeout');
-        const original = await handle.wait();
-        result = { ...original, status: 'timeout' as LeafStatus };
-        // The adapter's abort() pushes its own `done` event with status: 'aborted'
-        // into the event bus. Publish a corrective `done` so events.jsonl reflects
-        // the true terminal status (timeout) the watchdog promoted this leaf to —
-        // otherwise downstream consumers would see a manifest/event-log mismatch.
-        h.bus.publish({ t: 'done', leafId: spec.id, result, ts: Date.now() });
-      } else {
-        result = winner as LeafResult;
-      }
-    } else {
-      result = await handle.wait();
-    }
-
-    // Make sure event drain has run to completion so publishes are flushed.
-    await drain;
-
-    // Engine-side backfill: adapters MAY set `finalAssistantText` on their done
-    // event, but the contract is single-sourced here. If the adapter didn't set
-    // it, fall back to the last assistant message we observed in the stream.
-    // `structuredOutputValue` stays adapter-owned — only the adapter knows
-    // whether it came from a real tool-use capture or a fallback parse.
+    // Engine-side backfill (mirrors pre-loop behavior).
     if (result.finalAssistantText === undefined && lastAssistantText !== undefined) {
       result = { ...result, finalAssistantText: lastAssistantText };
+    }
+
+    // ===========================================================================
+    // VERIFY LOOP — keystone of the hook system.
+    //
+    // After the adapter says it's "done", we don't immediately publish a final
+    // `done` to the bus. Instead, we let `beforeResponse`, `verifyTaskComplete`,
+    // and `beforeTaskDone` inspect the draft result. If ANY of them returns
+    // `{retry,steerWith}` (or verify says `{done:false,...}`), we re-arm the
+    // session — preferring `handle.continueAfterDone` (preserves context),
+    // falling back to a fresh spawn with the steer text appended to the task.
+    // The loop is bounded by `config.todos.maxRetries`. On exhaustion we
+    // promote status to 'error' and surface the unmet items in the message.
+    // ===========================================================================
+    const maxRetries = config.todos.maxRetries ?? 3;
+    while (true) {
+      const retryReasons: string[] = [];
+
+      let resp1: { retry?: boolean; steerWith?: string } | undefined;
+      if (hooks?.has('beforeResponse')) {
+        resp1 = await hooks.fire(
+          'beforeResponse',
+          sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'beforeResponse'),
+          { spec: workingSpec, draftResult: result, attempt },
+        ) ?? undefined;
+      }
+
+      let verify: { done: true } | { done: false; remaining: string[]; steerWith?: string } | undefined;
+      if (hooks?.has('verifyTaskComplete')) {
+        verify = await hooks.fire(
+          'verifyTaskComplete',
+          sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'verifyTaskComplete'),
+          { spec: workingSpec, draftResult: result, attempt, todos: todoStore.list() },
+        ) ?? undefined;
+      }
+
+      let resp2: { retry?: boolean; steerWith?: string } | undefined;
+      if (hooks?.has('beforeTaskDone')) {
+        resp2 = await hooks.fire(
+          'beforeTaskDone',
+          sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'beforeTaskDone'),
+          { spec: workingSpec, draftResult: result, attempt },
+        ) ?? undefined;
+      }
+
+      if (resp1?.retry) retryReasons.push(resp1.steerWith ?? 'Please continue.');
+      if (verify && verify.done === false) {
+        retryReasons.push(verify.steerWith ?? formatRemaining(verify.remaining ?? todoStore.remaining().map(t => t.text)));
+      }
+      if (resp2?.retry) retryReasons.push(resp2.steerWith ?? 'Please continue.');
+
+      if (retryReasons.length === 0) break;
+
+      if (attempt >= maxRetries) {
+        const unmet = verify && verify.done === false
+          ? verify.remaining
+          : todoStore.remaining().map(t => t.text);
+        const summary = unmet.length > 0
+          ? unmet.map(t => `- ${t}`).join('\n')
+          : retryReasons.join(' / ');
+        result = {
+          ...result,
+          status: 'error',
+          error: `verify-loop exhausted after ${attempt + 1} attempt(s); unmet:\n${summary}`,
+        };
+        break;
+      }
+
+      attempt++;
+      const steerText = retryReasons.join('\n\n');
+
+      let resumed = false;
+      if (handle.supportsResume && handle.continueAfterDone) {
+        try {
+          await handle.continueAfterDone(steerText);
+          // Re-enter drain on the same handle. The adapter swaps in a fresh
+          // EventChannel internally; iterating handle.events picks it up.
+          let nextLast: string | undefined;
+          const drainNext = (async () => {
+            for await (const ev of handle.events as AsyncIterable<AgentEvent>) {
+              if (ev.t === 'message' && ev.role === 'assistant' && typeof ev.content === 'string' && ev.content.length > 0) {
+                nextLast = ev.content;
+              }
+              const next = await applyEventHooks(h, workingSpec, attempt, todoStore, handle, ev);
+              if (next === DROP_EVENT) continue;
+              h.bus.publish(next);
+              await fireAfterEventHook(h, workingSpec, attempt, todoStore, handle, next);
+            }
+          })().catch(() => { /* surfaced via wait() */ });
+          result = await handle.wait();
+          await drainNext;
+          if (result.finalAssistantText === undefined && nextLast !== undefined) {
+            result = { ...result, finalAssistantText: nextLast };
+          }
+          lastAssistantText = nextLast ?? lastAssistantText;
+          resumed = true;
+        } catch {
+          resumed = false;
+        }
+      }
+
+      if (!resumed) {
+        try { await handle.abort?.('verify-loop-respawn'); } catch { /* ignore */ }
+        const augmented: LeafSpec = {
+          ...workingSpec,
+          task: `${workingSpec.task}\n\n${steerText}`,
+        };
+        const next = await spawnDrainWait({
+          h, spec: augmented, spawnCtx, adapter, todoStore, attempt,
+        });
+        handle = next.handle;
+        result = next.result;
+        if (result.finalAssistantText === undefined && next.lastAssistantText !== undefined) {
+          result = { ...result, finalAssistantText: next.lastAssistantText };
+        }
+        lastAssistantText = next.lastAssistantText ?? lastAssistantText;
+      }
+    }
+
+    // Final assistant-text backfill — adapters MAY set it; engine guarantees it
+    // when at least one assistant message arrived during any attempt.
+    if (result.finalAssistantText === undefined && lastAssistantText !== undefined) {
+      result = { ...result, finalAssistantText: lastAssistantText };
+    }
+
+    if (hooks?.has('afterResponse')) {
+      await hooks.fire('afterResponse', sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'afterResponse'), { spec: workingSpec, result });
+    }
+    if (hooks?.has('afterTaskDone')) {
+      await hooks.fire('afterTaskDone', sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'afterTaskDone'), { spec: workingSpec, result });
     }
 
     const endedAt = Date.now();
     const durationMs = endedAt - startedAt;
 
-    const proofDir = join(h.runDir, 'leaves', spec.id);
+    const proofDir = join(h.runDir, 'leaves', workingSpec.id);
     const proofPath = join(proofDir, 'proof.json');
     await mkdir(proofDir, { recursive: true });
     const proof = { result };
     await writeFile(proofPath, JSON.stringify(proof, null, 2), 'utf8');
 
     const summary: LeafSummary = {
-      id: spec.id,
+      id: workingSpec.id,
       status: result.status,
       durationMs,
       proofPath,
     };
     h._leafRecords.push(summary);
 
+    if (hooks?.has('afterSession')) {
+      await hooks.fire('afterSession', sessionHookCtx(h, workingSpec, attempt, todoStore, handle, 'afterSession'), { spec: workingSpec, result });
+    }
+    await todoStore.flush();
+
     if (result.status !== 'done') {
-      throw new Error(`leaf failed: ${spec.id}`);
+      throw new Error(`leaf failed: ${workingSpec.id}${result.error ? `: ${result.error}` : ''}`);
     }
 
     return { ...result, proofPath };
   } finally {
     h._activeClaims.delete(spec.id);
-    // De-register handle regardless of outcome.
     getRunner()?.activeHandles.delete(spec.id);
   }
 }
 
 export async function parallel(h: Ctx, fns: Array<() => Promise<unknown>>): Promise<void> {
+  const hooks = h.hooks;
+  if (hooks?.has('beforeParallel')) {
+    await hooks.fire('beforeParallel', buildHookCtx(h, { hookName: 'beforeParallel' }), { count: fns.length });
+  }
+
   const settled = await Promise.allSettled(fns.map(fn => fn()));
   const errors = settled
     .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     .map(r => (r.reason instanceof Error ? r.reason : new Error(String(r.reason))));
 
+  if (hooks?.has('afterParallel')) {
+    await hooks.fire('afterParallel', buildHookCtx(h, { hookName: 'afterParallel' }), { count: fns.length, errors });
+  }
+
   if (errors.length > 0) {
-    // Use node-native AggregateError for a single-error-per-branch surface.
     const AggErr = (globalThis as unknown as { AggregateError: typeof AggregateError }).AggregateError;
     throw new AggErr(errors, `parallel: ${errors.length} branch(es) failed`);
   }
 }
 
-// Also re-export the Ctx and core types for convenience.
 export type { Ctx, LeafSpec, LeafResult } from './types';
 
-// Ensure mkdir for manifest dir (used only for a defensive write if body skipped it).
 export async function _ensureRunDir(runDir: string): Promise<void> {
   await mkdir(runDir, { recursive: true });
 }
 
-// Small helper so downstream imports don't drag in node types.
 export { dirname };

@@ -46,6 +46,11 @@ import { parseWith } from './parseWith';
 // Re-export parseWith so consumers importing from 'taskflow' still find it.
 export { parseWith } from './parseWith';
 
+// Re-export defineConfig so consumers can author .agents/taskflow/config.ts
+// against the public 'taskflow' entry point.
+export { defineConfig } from '../core/config';
+export type { TaskflowConfig } from '../core/config';
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -72,6 +77,13 @@ export interface SessionSpec<S extends ZodTypeAny = ZodTypeAny> {
    * Promise<string> (the final assistant message text).
    */
   schema?: S;
+  /**
+   * Inline todo seed list. Composed with auto-extracted markdown checkboxes
+   * (`- [ ] ...`) from `task` when `config.todos.autoExtract` is true.
+   * Surfaces as `LeafSpec.todos` to the engine; the verify-loop hooks see
+   * the unified set via `ctx.todos.list()`.
+   */
+  todos?: string[];
 }
 
 /**
@@ -135,6 +147,7 @@ function toEngineSpec(
   if (spec.write !== undefined) out.claims = spec.write;
   if (spec.timeoutMs !== undefined) out.timeoutMs = spec.timeoutMs;
   if (spec.rulesPrefix !== undefined) out.rulesPrefix = spec.rulesPrefix;
+  if (spec.todos !== undefined) out.todos = spec.todos;
   if (spec.schema !== undefined) {
     // Zod 4 exposes a native JSON-Schema export — prefer it over the
     // `zod-to-json-schema` package (which lags behind zod 4's internal shape).
@@ -151,8 +164,13 @@ function toEngineSpec(
  * Run the engine `leaf()` and translate the result into the fluent API's
  * return contract. On failure re-throws a descriptive Error so
  * `await session(...)` gives a useful stack trace.
+ *
+ * Exported as the single source of truth for lowering a SessionSpec to
+ * `engineLeaf()` + decoding the result. The fluent API calls this with the
+ * harness's Ctx; the engine's HookCtx exposes `ctx.session` that calls it
+ * with the same Ctx so hook-spawned sessions go through identical lowering.
  */
-async function runSession<T>(
+export async function runSessionWithCtx<T>(
   h: Ctx,
   id: string,
   spec: SessionSpec<ZodTypeAny>,
@@ -245,7 +263,7 @@ export function taskflow(name: string): TaskflowBuilder {
             id: string,
             spec: T,
           ): Promise<SessionReturn<T>> {
-            return runSession<SessionReturn<T>>(h, id, spec);
+            return runSessionWithCtx<SessionReturn<T>>(h, id, spec);
           },
         };
 

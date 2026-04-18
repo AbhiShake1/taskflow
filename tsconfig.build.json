@@ -1,0 +1,31 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": false,
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "core/**/*.ts",
+    "api/**/*.ts",
+    "adapters/**/*.ts",
+    "runner/**/*.ts",
+    "tui/**/*.ts",
+    "tui/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "__tests__/**",
+    "tasks/**",
+    "data/**",
+    "plan/**"
+  ]
+}

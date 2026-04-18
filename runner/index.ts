@@ -20,6 +20,7 @@ import { setRunner, type RunnerContext } from './context';
 import type { AgentAdapter, AgentHandle } from '../adapters/index';
 import type { AgentName } from '../core/types';
 import mockAdapter from '../adapters/mock';
+import { loadConfig } from '../core/config';
 
 async function main(): Promise<void> {
   const harnessPath = process.argv[2];
@@ -48,7 +49,28 @@ async function main(): Promise<void> {
       ? async (_agent: AgentName): Promise<AgentAdapter> => mockAdapter
       : undefined;
 
-  setRunner({ bus, runsDir, runId, activeHandles, adapterOverride, cwd: process.cwd() });
+  // Load taskflow config (hierarchical .agents/taskflow/config.ts walk) once at
+  // startup so the harness inherits the resolved config + event layers + plugins
+  // without reloading per harness() call. Failures fall back to defaults — the
+  // harness has its own try/catch fallback too.
+  let cfg: Awaited<ReturnType<typeof loadConfig>> | undefined;
+  try {
+    cfg = await loadConfig();
+  } catch (err) {
+    console.error('config load failed, falling back to defaults:', (err as Error).message);
+  }
+
+  setRunner({
+    bus,
+    runsDir,
+    runId,
+    activeHandles,
+    adapterOverride,
+    cwd: process.cwd(),
+    ...(cfg
+      ? { config: cfg.resolved, eventLayers: cfg.eventLayers, plugins: cfg.plugins }
+      : {}),
+  });
 
   // Pick UI mode. Interactive TUI requires both stdin and stdout to be a TTY.
   // HARNESS_NO_TTY forces the headless stream regardless of the terminal.

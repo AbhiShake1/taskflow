@@ -1,0 +1,12 @@
+__tests__
+tasks
+plan
+data
+.claude
+node_modules
+*.log
+*.lock
+src
+tsconfig*.json
+vitest.config.*
+.github

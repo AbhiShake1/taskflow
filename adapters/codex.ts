@@ -362,6 +362,17 @@ const codexAdapter: AgentAdapter = {
           // Don't wait on exit here — runtime consumers await wait() separately.
         },
         wait: () => doneP,
+        // Path B: `codex exec -p "<task>"` is a single-shot invocation; the binary
+        // exits when the agent finishes its turn and our wait()/finalize() chain
+        // only resolves on child 'exit'. By the time the engine could call
+        // continueAfterDone the subprocess is already dead and stdin is closed,
+        // so honest re-spawn is the only option.
+        continueAfterDone: async (_text: string) => {
+          throw new Error(
+            'codex: subprocess closed after terminal turn; continueAfterDone unavailable — engine should fallback to re-spawn',
+          );
+        },
+        supportsResume: false,
       };
     }
 

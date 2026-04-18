@@ -1,23 +1,68 @@
 {
-  "name": "taskflow",
+  "name": "@onfire/taskflow",
   "version": "0.1.0",
-  "description": "Fluent-authored orchestration of parallel/sequential AI coding-agent sessions",
-  "private": true,
+  "description": "Multi-agent orchestration harness for AI coding agents (claude-code, codex, cursor, opencode, pi). Async-await TypeScript API; lifecycle hooks; auto-todos with verify-loop.",
+  "keywords": [
+    "ai",
+    "agent",
+    "orchestration",
+    "claude",
+    "harness",
+    "multi-agent"
+  ],
+  "license": "MIT",
+  "author": "onFire(Abhi)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbhiShake1/taskflow.git"
+  },
+  "private": false,
   "type": "module",
+  "main": "./dist/api/index.js",
+  "types": "./dist/api/index.d.ts",
   "exports": {
-    ".": "./api/index.ts",
-    "./core": "./core/index.ts",
-    "./tui": "./tui/index.tsx"
+    ".": {
+      "types": "./dist/api/index.d.ts",
+      "import": "./dist/api/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui/index.d.ts",
+      "import": "./dist/tui/index.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./config": {
+      "types": "./dist/core/config.d.ts",
+      "import": "./dist/core/config.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "run": "tsx runner/index.ts",
     "plan": "tsx plan/cli.ts",
     "test": "vitest run",
-    "test:real": "HARNESS_REAL_TESTS=1 vitest run"
+    "test:real": "HARNESS_REAL_TESTS=1 vitest run",
+    "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.111",
+    "defu": "^6.1.4",
     "ink": "^7.0.0",
+    "jiti": "^2.4.2",
     "react": "^19.2.5",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"

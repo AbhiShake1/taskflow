@@ -23,6 +23,16 @@ import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output
  *     whose content blocks accept `cache_control`. So we split the initial prompt into two blocks
  *     (rules prefix + task) and mark the rules block with `cache_control: { type: 'ephemeral',
  *     ttl: '1h' }` when a prefix is provided.
+ *
+ * Exit-hook continuation (`continueAfterDone`):
+ *   The SDK's per-turn behavior is: the CLI subprocess emits exactly one
+ *   `SDKResultMessage` then exits once we close the input iterable. The session
+ *   itself is persisted to disk under ~/.claude/projects/, addressable by the
+ *   `session_id` carried on every `SDKResultMessage`. To "continue after done"
+ *   we capture that id and, on `continueAfterDone(text)`, spin up a brand-new
+ *   `query()` with `options.resume: lastSessionId` and the steer text as its
+ *   first (and only) input message. This preserves conversation context AND
+ *   the prompt cache (the resumed turn's prefix matches the prior turn).
  */
 
 type InboundMessage = {
@@ -93,10 +103,14 @@ function stringifyAssistantContent(content: unknown): string {
 const claudeCodeAdapter: AgentAdapter = {
   name: 'claude-code',
   spawn(spec: LeafSpec, ctx: SpawnCtx): AgentHandle {
-    const ch = new EventChannel<AgentEvent>();
+    // Per-turn mutable state. Each turn (initial spawn + every continueAfterDone
+    // call) installs a fresh EventChannel, a fresh `done` promise, and a fresh
+    // InputStream. The handle's public surface (`events`, `wait`, ...) reads
+    // through these closures so callers always see the latest turn's state.
+    let ch = new EventChannel<AgentEvent>();
     const startedAt = Date.now();
     let resolveResult!: (r: LeafResult) => void;
-    const done = new Promise<LeafResult>(r => { resolveResult = r; });
+    let done = new Promise<LeafResult>(r => { resolveResult = r; });
     let settled = false;
     const settle = (r: LeafResult) => { if (!settled) { settled = true; resolveResult(r); } };
 
@@ -152,7 +166,20 @@ const claudeCodeAdapter: AgentAdapter = {
           message: { role: 'user', content: taskText },
         };
 
-    const input = new InputStream();
+    // Wire an AbortController so SpawnCtx.signal (or our abort()) can tear down the SDK.
+    // The same controller is shared across resumed turns — abort() must kill any
+    // in-flight turn regardless of which one is currently pumping.
+    const abortController = new AbortController();
+    if (ctx.signal) {
+      if (ctx.signal.aborted) abortController.abort();
+      else ctx.signal.addEventListener('abort', () => abortController.abort(), { once: true });
+    }
+
+    let queryObj: any = null;
+    let aborted = false;
+    // Per-turn input stream. Replaced on each resumed turn so `steer()` lands
+    // on the live SDK input rather than a closed prior stream.
+    let input = new InputStream();
     input.push(initial);
 
     // Emit the user message we just sent as an AgentEvent too (for transcript fidelity).
@@ -162,22 +189,15 @@ const claudeCodeAdapter: AgentAdapter = {
       ts: Date.now(),
     });
 
-    // Wire an AbortController so SpawnCtx.signal (or our abort()) can tear down the SDK.
-    const abortController = new AbortController();
-    if (ctx.signal) {
-      if (ctx.signal.aborted) abortController.abort();
-      else ctx.signal.addEventListener('abort', () => abortController.abort(), { once: true });
-    }
-
-    // Pump the SDK asynchronously. Any error here is absorbed and normalized to an 'error' +
-    // 'done' event — we never let an unhandled rejection bubble.
-    let queryObj: any = null;
-    let aborted = false;
     // Last-seen `SDKResultMessage.usage`, normalized to camelCase. Attached to the
     // LeafResult on the terminal `done` event so downstream consumers can verify that
     // Anthropic prompt-caching is actually firing (cacheReadInputTokens > 0 across
     // back-to-back runs that share a rulesPrefix).
     let lastUsage: LeafUsage | undefined;
+    // Last-seen session_id from a SDKResultMessage. Required for `continueAfterDone`
+    // — we feed it into a follow-up query()'s `options.resume` so the new turn
+    // continues the same conversation (and hits the same prompt cache).
+    let lastSessionId: string | undefined;
     // Structured output capture state. `capturedStructuredOutput` is set when
     // the model invokes our `submit_result` tool OR when we parse a JSON block
     // out of the final assistant message (fallback path). `lastAssistantText`
@@ -186,13 +206,22 @@ const claudeCodeAdapter: AgentAdapter = {
     let capturedStructuredOutput: unknown | undefined;
     let lastAssistantText: string | undefined;
     // Resolves once queryObj is constructed (so `abort()` can wait for it to exist before
-    // calling interrupt()). Settles to null on init failure to unblock any waiters.
+    // calling interrupt()). Re-created on each turn — abort() always reads the latest one.
     let resolveReady!: (q: any) => void;
-    const ready = new Promise<any>(r => { resolveReady = r; });
+    let ready: Promise<any> = new Promise<any>(r => { resolveReady = r; });
 
-    (async () => {
+    /**
+     * Pump one turn of the SDK conversation. Used for the initial spawn AND
+     * for every `continueAfterDone` call. The caller is responsible for
+     * having already swapped `ch`, `input`, `done`, and `ready` to fresh
+     * instances and pushed the appropriate seed user message into `input`.
+     */
+    const runTurn = async (resumeSessionId?: string): Promise<void> => {
+      // Reset per-turn capture so the next-turn result doesn't reuse stale values.
+      capturedStructuredOutput = undefined;
+      lastAssistantText = undefined;
+
       try {
-        // Lazy-import so the rest of the harness doesn't pay for this dep unless used.
         const sdk: any = await import('@anthropic-ai/claude-agent-sdk');
         const queryFn = sdk.query ?? sdk.default?.query;
         if (typeof queryFn !== 'function') {
@@ -263,6 +292,10 @@ const claudeCodeAdapter: AgentAdapter = {
             allowDangerouslySkipPermissions: true,
             ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
             ...(extraAllowedTools.length > 0 ? { allowedTools: extraAllowedTools } : {}),
+            // Resume the prior session for continueAfterDone turns. The SDK
+            // loads the conversation history from ~/.claude/projects/ so the
+            // model sees full context and the prompt cache stays warm.
+            ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           },
         });
         resolveReady(queryObj);
@@ -285,6 +318,8 @@ const claudeCodeAdapter: AgentAdapter = {
           if (msg && typeof msg === 'object' && (msg as any).type === 'result') {
             const u = extractUsage((msg as any).usage);
             if (u) lastUsage = u;
+            const sid = (msg as any).session_id;
+            if (typeof sid === 'string' && sid.length > 0) lastSessionId = sid;
             input.close();
           }
         }
@@ -330,6 +365,9 @@ const claudeCodeAdapter: AgentAdapter = {
         ch.push({ t: 'done', leafId: spec.id, result, ts: endedAt });
         ch.close();
         input.close();
+        // Settle the CURRENT turn's promise. continueAfterDone replaces this
+        // closure variable before kicking off the next turn, so the next
+        // `runTurn` will write into a fresh `done`.
         settle(result);
       } catch (err) {
         resolveReady(null);
@@ -346,16 +384,29 @@ const claudeCodeAdapter: AgentAdapter = {
         input.close();
         settle(result);
       }
-    })();
+    };
+
+    // Kick off the first turn. We deliberately do NOT await — the caller
+    // returns the handle synchronously and the engine drains `events` while
+    // this pump runs in the background.
+    void runTurn();
+
+    // The handle's `events` is a thin wrapper that delegates each
+    // [Symbol.asyncIterator]() call to the CURRENT channel. The engine
+    // re-iterates after each `continueAfterDone` to pick up new events.
+    const events: AsyncIterable<AgentEvent> = {
+      [Symbol.asyncIterator]: () => ch[Symbol.asyncIterator](),
+    };
 
     return {
-      events: ch,
+      events,
 
       async steer(inputText: string) {
         // After the SDK emits its terminal `SDKResultMessage` we close `input`, so any
         // `steer()` call arriving afterwards has nowhere to go. Best-effort: silently
         // drop instead of pushing into a closed queue. Callers who want loud failure
-        // can inspect settled state via wait() resolution first.
+        // can inspect settled state via wait() resolution first. (continueAfterDone is
+        // the proper post-turn re-entry point.)
         if (settled || input.closed) return;
         ch.push({ t: 'steer', leafId: spec.id, content: inputText, ts: Date.now() });
         // Push the new user message directly into our owned input stream. This is the
@@ -394,6 +445,48 @@ const claudeCodeAdapter: AgentAdapter = {
       },
 
       wait: () => done,
+
+      supportsResume: true,
+
+      async continueAfterDone(text: string) {
+        // Pre-conditions: a previous turn must have completed (`settled` flips
+        // true on each runTurn settle) AND we must have captured a session_id
+        // from its terminal SDKResultMessage. If either is missing the engine
+        // should fall back to a re-spawn.
+        if (aborted) {
+          throw new Error('claude-code: session aborted; continueAfterDone unavailable — engine should fallback to re-spawn');
+        }
+        if (!lastSessionId) {
+          throw new Error('claude-code: session closed; continueAfterDone unavailable — engine should fallback to re-spawn');
+        }
+
+        // Swap in fresh per-turn state. The events wrapper reads `ch` through
+        // its closure, so re-iterating `handle.events` after this returns
+        // yields a brand-new async iterator over the new channel.
+        ch = new EventChannel<AgentEvent>();
+        done = new Promise<LeafResult>(r => { resolveResult = r; });
+        settled = false;
+        ready = new Promise<any>(r => { resolveReady = r; });
+        input = new InputStream();
+        // Seed the new input with the steer text as the only user message.
+        // The SDK loads prior history from disk via `resume`, so we don't need
+        // to replay anything here.
+        input.push({
+          type: 'user',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: text },
+        });
+
+        // Surface the steer + user-echo events on the new channel so observers
+        // see the resume-prompt land identically to the initial-turn flow.
+        ch.push({ t: 'steer', leafId: spec.id, content: text, ts: Date.now() });
+        ch.push({ t: 'message', leafId: spec.id, role: 'user', content: text, ts: Date.now() });
+
+        // Kick off the next turn. We deliberately do NOT await — the engine
+        // re-enters its drain loop on `handle.events` and re-awaits
+        // `handle.wait()` to get the next terminal result.
+        void runTurn(lastSessionId);
+      },
     };
   },
 };

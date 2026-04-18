@@ -40,6 +40,8 @@ export interface AgentHandle {
   steer(input: string): Promise<void>;
   abort(reason?: string): Promise<void>;
   wait(): Promise<LeafResult>;
+  continueAfterDone?: (text: string) => Promise<void>;
+  supportsResume?: boolean;
 }
 
 export interface AgentAdapter {

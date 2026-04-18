@@ -8,6 +8,7 @@ export type LeafSpec = {
   claims?: string[];
   timeoutMs?: number;
   rulesPrefix?: boolean;                       // default true
+  todos?: string[];
   /**
    * Opt-in structured-output contract. When set, the adapter must:
    *   - instruct the LLM to emit a value conforming to `jsonSchema`
@@ -113,4 +114,10 @@ export type Ctx = {
   _activeClaims: Map<string, string[]>;
   /** Internal: adapter override from HarnessOptions, threaded through for tests. */
   _adapterOverride?: (agent: AgentName) => Promise<import('../adapters').AgentAdapter>;
+  hooks?: import('./hooks').HookRegistry;
+  config?: import('./hooks').ResolvedConfig;
+  /** Internal: harness name, used by hook ctx scope.harness. */
+  _harnessName?: string;
+  /** Internal: plugin ctx builders, applied to every HookCtx so per-session hooks see ctx.plugins.<name>. */
+  _pluginCtxBuilders?: import('./plugin').ComposedPluginCtxBuilder[];
 };

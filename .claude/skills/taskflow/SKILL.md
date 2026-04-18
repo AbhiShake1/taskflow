@@ -179,3 +179,375 @@ The fluent API is a thin frontend that lowers onto engine primitives in `taskflo
 (`harness`, `stage`, `leaf`, `parallel`). Reach for those only when you need
 fine-grained control the fluent builder hasn't surfaced yet. The fluent API is
 the recommended authoring path.
+
+## Configuration: .agents/taskflow/config.ts
+
+Taskflow auto-discovers a project-local config file at `.agents/taskflow/config.{ts,mjs,js}`. Lookup order: starts at `~/.agents/taskflow/config.ts` and walks **down** the path toward `cwd`, picking up a config in every directory along the way. The cwd config is the most specific. Layers merge via `defu` (deep merge, later layers override earlier). `events` arrays accumulate; scalar `scope` takes the most-specific non-empty value.
+
+`defineConfig({...})` is the entry point — it's a no-op typing helper that surfaces autocompletion.
+
+```ts
+// .agents/taskflow/config.ts
+import { defineConfig } from '@onfire/taskflow/core/config';
+
+export default defineConfig({
+  // Hooks. Any subset of HookHandlers. See "Lifecycle hooks" below.
+  events: {
+    afterTaskDone: async (ctx, { spec, result }) => {
+      ctx.logger.info(`[${spec.id}] finished status=${result.status}`);
+    },
+  },
+
+  // Todos & verify-loop tuning.
+  todos: {
+    autoExtract: true,         // default true: parse `- [ ] item` from spec.task
+    maxRetries: 3,             // default 3: bound on the verify-loop
+    forceGeneration: false,    // default false: prepend "output your plan first" directive
+    generationPreamble: undefined, // optional: custom directive text; `{{items}}` is replaced
+  },
+
+  // Hook execution policy.
+  hooks: {
+    errorPolicy: 'swallow',    // 'swallow' | 'warn' | 'throw' — default 'swallow'
+    timeoutMs: 30_000,         // per-handler timeout — default 30000
+  },
+
+  // Free-form scope/constraints text prepended to every session task.
+  scope: 'No new files. No new deps. Edit-only.',
+
+  // Plugins: see "Plugins" below.
+  plugins: [],
+});
+```
+
+Defaults (see `core/config.ts` `DEFAULT_CONFIG`): `autoExtract: true`, `maxRetries: 3`, `errorPolicy: 'swallow'`, `timeoutMs: 30_000`, `forceGeneration: false`. `scope` is undefined.
+
+> **Until published:** `@onfire/taskflow` is the upcoming published name. While developing inside this repo, import from relative paths: `import { defineConfig } from '../core/config';` or `import type { HookHandlers } from '../core/hooks';`.
+
+## Lifecycle hooks
+
+Every hook is `(ctx: HookCtx, payload: HookPayloads[N]) => HookReturns[N] | Promise<...>`. Source of truth: `core/hooks.ts`. `before*` returns can mutate the upcoming action; `after*` returns are ignored.
+
+### Harness
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `beforeHarness` | once at top of `harness()`, after config+plugin resolution | `{ name; runId; runDir }` | `void` |
+| `afterHarness`  | once after the harness body settles, before throw is rethrown | `{ manifest; error? }` | `void` |
+
+### Phase
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `beforePhase` | entering `stage()` (i.e. `phase(name, body)`) | `{ phaseId; parentId? }` | `void` |
+| `afterPhase`  | leaving the stage body (success or throw) | `{ phaseId; status: 'done'\|'error'; error? }` | `void` |
+
+### Session (leaf)
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `beforeSession` | start of `leaf()`, after todos seeded + scope/forceGen applied | `{ spec }` | `{ spec?; skip? } \| void` — replace spec or skip |
+| `afterSession`  | after proof.json is written | `{ spec; result }` | `void` |
+| `beforeSpawn`   | immediately before `adapter.spawn(...)` | `{ spec }` | `{ spec? } \| void` — last chance to mutate spec |
+| `afterSpawn`    | immediately after spawn, with the live `handle` | `{ spec; handle }` | `void` |
+
+### Streaming
+
+Each event the adapter emits flows through one `before*` (mutate/drop) and, if not dropped, one `after*` (observe).
+
+| Hook | Payload | Return |
+|---|---|---|
+| `beforeMessage` / `afterMessage` | `{ ev: Extract<RunEvent, { t:'message' }> }` | before: `{ content?; drop? } \| void` |
+| `beforeToolCall` / `afterToolCall` | `{ ev: Extract<RunEvent, { t:'tool' }> }` | before: `{ args?; skip? } \| void` |
+| `beforeToolResult` / `afterToolResult` | `{ ev: Extract<RunEvent, { t:'tool-res' }> }` | before: `{ result? } \| void` |
+| `beforeEdit` / `afterEdit` | `{ ev: Extract<RunEvent, { t:'edit' }> }` | `void` |
+| `beforeSteer` / `afterSteer` | `{ leafId; content }` | before: `{ content?; cancel? } \| void` |
+| `beforeAbort` / `afterAbort` | `{ leafId; reason? }` | before: `{ cancel? } \| void` |
+
+### Errors
+
+| Hook | Payload | Return |
+|---|---|---|
+| `onError` | `{ leafId?; error }` (fired for `t:'error'` adapter events) | `{ swallow? } \| void` |
+
+### Response & verify
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `beforeResponse`     | after adapter says done, before verify | `{ spec; draftResult; attempt }` | `{ retry?; steerWith? } \| void` |
+| `verifyTaskComplete` | between beforeResponse and beforeTaskDone | `{ spec; draftResult; attempt; todos }` | `{ done: true } \| { done: false; remaining: string[]; steerWith? }` |
+| `beforeTaskDone`     | after verify | `{ spec; draftResult; attempt }` | `{ retry?; steerWith? } \| void` |
+| `afterResponse`      | after the verify-loop settles (final result locked) | `{ spec; result }` | `void` |
+| `afterTaskDone`      | last hook before proof.json write | `{ spec; result }` | `void` |
+
+### Todos
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `collectTodos` | once per leaf, before `beforeSession` | `{ spec }` | `string[] \| { items: string[]; required? } \| void` — items merged into the leaf todo store |
+
+### Parallel
+
+| Hook | Fires | Payload | Return |
+|---|---|---|---|
+| `beforeParallel` | start of `parallel()` (engine primitive) | `{ count }` | `void` |
+| `afterParallel`  | after `Promise.allSettled` resolves | `{ count; errors }` | `void` |
+
+## HookCtx
+
+The context object passed to every hook handler. Source: `core/hooks.ts`.
+
+```ts
+interface HookCtx {
+  // Identity
+  scope:        { harness: string; runId: string; runDir: string };
+  phaseScope?:  { id: string; stack: string[] };
+  sessionScope?:{ id: string; spec: LeafSpec; attempt: number };
+  event?:       RunEvent;        // present on streaming hooks
+  hookName:     HookName;        // the firing hook's name
+
+  // Bus & live handle
+  bus:    EventBus;
+  handle?: AgentHandle;          // present from afterSpawn through afterTaskDone
+
+  // Imperative actions
+  steer:  (text: string) => Promise<void>;
+  abort:  (reason?: string) => Promise<void>;
+  emit:   (ev: RunEvent) => void;
+
+  // Capabilities
+  logger: HookLogger;            // debug/info/warn/error
+  fs:     ScopedFs;              // run-dir-scoped read/write/mkdir/list
+  fetch:  typeof globalThis.fetch;
+  todos:  TodoApi;               // list/add/complete/remaining/clear/loadFromMarkdown
+  proof:  ProofApi;              // captureJson/captureFile under runDir/proof
+  config: ResolvedConfig;        // resolved (post-merge) config
+
+  // Composition
+  plugins: PluginNamespaces;     // module-augment to type your plugin's surface
+  state:   Map<string, unknown>; // per-fire scratch space; not shared across leaves
+
+  // Spawn-from-hook — the keystone for follow-up work
+  session: <T extends SessionSpecLike<unknown>>(id: string, spec: T) => Promise<SessionReturn<T>>;
+  phase:   <T>(name: string, body: () => Promise<T>) => Promise<T>;
+}
+```
+
+### `ctx.session(id, spec)` and `ctx.phase(name, body)`
+
+These are the SAME fluent API as the top-level `session(...)` / `phase(...)` you destructure from `taskflow().run(({ phase, session }) => ...)`. A hook handler can spawn follow-up work and the engine treats it identically to a hand-authored leaf:
+
+- It bus-publishes events live → the TUI updates while the hook is running.
+- It appears in `manifest.json` alongside hand-authored leaves.
+- Claim-conflict checks apply (overlapping `write` globs throw before spawn).
+- All hooks (including `beforeSession` / `collectTodos` / verify-loop) fire for the child.
+- The child's spawned children fire hooks too — recursion is bounded only by user code.
+
+```ts
+// .agents/taskflow/config.ts
+import { defineConfig } from '@onfire/taskflow/core/config';
+
+export default defineConfig({
+  events: {
+    afterTaskDone: async (ctx, { spec, result }) => {
+      // GUARD: we're inside a session hook, so check id to avoid infinite recursion.
+      if (ctx.sessionScope?.id !== 'parent') return;
+      if (result.status !== 'done') return;
+
+      // Spawn a follow-up under a named phase so the TUI shows nesting.
+      await ctx.phase('post-parent', async () => {
+        await ctx.session('audit', {
+          with: 'claude-code:sonnet',
+          task: `Audit the output produced by ${spec.id}.`,
+          write: [`data/audits/${spec.id}.md`],
+        });
+      });
+    },
+  },
+});
+```
+
+> **Recursion:** `ctx.session` from a hook fires every hook the parent does — including `afterTaskDone` itself. Always gate on `ctx.sessionScope?.id` (or stash a marker in `ctx.state`) before spawning, or you will recurse forever.
+
+## Todos & verify-loop
+
+Taskflow tracks a per-leaf todo list, persisted to `data/runs/<runId>/leaves/<leafId>/todos.json` after every mutation.
+
+Sources, in seeding order:
+
+1. **Auto-extraction** from `- [ ] item` markdown lines in `spec.task`. Default ON; disable with `config.todos.autoExtract: false`.
+2. **`SessionSpec.todos: string[]`** — explicit declaration on the session spec.
+3. **`collectTodos` hook** — config and plugins return `string[]` (or `{ items, required? }`); items are merged into the todo store and tracked as **mandatory** for the verify-loop.
+
+### The verify-loop
+
+After `handle.wait()` resolves with the adapter's draft result, the engine does NOT immediately publish a final `done`. It runs:
+
+```
+beforeResponse  →  verifyTaskComplete  →  beforeTaskDone
+```
+
+If any of those returns `{ retry: true, steerWith }` (or verify returns `{ done: false, remaining: [...], steerWith }`), the engine re-arms the session:
+
+- If the adapter exposes `handle.continueAfterDone(steerText)` (claude-code, mock), it resumes with preserved context.
+- Otherwise it re-spawns a fresh session with `steerText` appended to the task.
+
+The loop is bounded by `config.todos.maxRetries` (default 3). On exhaustion, the result's `status` is promoted to `'error'` and `error` names the unmet items:
+
+```
+verify-loop exhausted after 4 attempt(s); unmet:
+- write the migration
+- update the changelog
+```
+
+```ts
+// Example: enforce a "must produce JSON output" rule.
+export default defineConfig({
+  events: {
+    verifyTaskComplete: async (ctx, { draftResult }) => {
+      const text = draftResult.finalAssistantText ?? '';
+      if (text.includes('```json')) return { done: true };
+      return {
+        done: false,
+        remaining: ['emit a ```json block'],
+        steerWith: 'You forgot the JSON block. Emit it now in a ```json fence.',
+      };
+    },
+  },
+  todos: { maxRetries: 2 },
+});
+```
+
+## forceGeneration & scope
+
+Both options inject preamble text into the final task string. Order in the spawned prompt:
+
+```
+[scope block]   ← config.scope
+[forceGen directive]   ← config.todos.forceGeneration
+[original task]
+```
+
+### `config.scope`
+
+A free-form text block prepended verbatim under a `Scope and constraints:` header. Use for short, hard rules every session must respect.
+
+```ts
+export default defineConfig({
+  scope: 'No new files. No new deps. Edit existing modules only.',
+});
+```
+
+Result: every spawned task starts with
+
+```
+Scope and constraints:
+No new files. No new deps. Edit existing modules only.
+
+---
+
+<original task>
+```
+
+### `config.todos.forceGeneration`
+
+When `true`, the engine prepends a directive instructing the agent to output a `- [ ]` markdown plan **before** doing any other work. The plan must include all mandatory items collected from `collectTodos`.
+
+`config.todos.generationPreamble` (string, optional) overrides the directive. The literal token `{{items}}` is replaced with the formatted item list (`- [ ] x\n- [ ] y\n...`).
+
+```ts
+export default defineConfig({
+  todos: {
+    forceGeneration: true,
+    generationPreamble: [
+      'Output your plan as a checklist FIRST. Required items:',
+      '{{items}}',
+      'Then execute.',
+    ].join('\n'),
+  },
+  events: {
+    collectTodos: async () => ['ran tests', 'updated changelog'],
+  },
+});
+```
+
+## Plugins
+
+A plugin is a function `(api: PluginInitApi) => PluginContribution | Promise<PluginContribution>`. Plugins compose deterministically in declared order. Their `events` mount alongside config events; their `ctx(...)` builder result lands on `ctx.plugins[name]`; their `config` fragment merges into the resolved config.
+
+```ts
+// PluginContribution shape (core/plugin.ts):
+interface PluginContribution {
+  name: string;                                                // unique, throws on duplicate
+  events?: Partial<HookHandlers>;                              // hook handlers
+  ctx?: (ctx: HookCtx) => Record<string, unknown>;             // build per-hook ctx surface
+  config?: Partial<ResolvedConfig>;                            // contribute config fragments
+}
+```
+
+### Module-augmentation: typing `ctx.plugins.<name>`
+
+```ts
+// my-plugin.ts
+import type { Plugin } from '@onfire/taskflow/core/plugin';
+
+export interface AuditApi {
+  trail: (msg: string) => Promise<void>;
+}
+
+declare module '@onfire/taskflow/core/hooks' {
+  interface PluginNamespaces {
+    audit: AuditApi;
+  }
+}
+
+export const auditPlugin: Plugin = () => ({
+  name: 'audit',
+  ctx: (ctx) => ({
+    trail: async (msg: string) => {
+      const line = `[${new Date().toISOString()}] ${ctx.sessionScope?.id ?? '-'} ${msg}\n`;
+      await ctx.fs.write('audit.log', line);
+    },
+  } satisfies AuditApi),
+  events: {
+    afterTaskDone: async (ctx, { spec, result }) => {
+      await ctx.plugins.audit.trail(`done ${spec.id} status=${result.status}`);
+    },
+  },
+});
+```
+
+Mount it from config:
+
+```ts
+// .agents/taskflow/config.ts
+import { defineConfig } from '@onfire/taskflow/core/config';
+import { auditPlugin } from './plugins/audit';
+
+export default defineConfig({
+  plugins: [auditPlugin],
+});
+```
+
+Composition rules (see `core/plugin.ts`):
+- Duplicate `name` throws at compose time.
+- Multiple plugins registering the SAME hook chain in declaration order — every handler runs sequentially; only the last non-undefined return is observed.
+- Plugin handlers mount BEFORE config handlers, so project-level config code runs LAST and has the final say.
+
+## Authoring loop (when writing config.ts or hooks)
+
+A short workflow when extending a project's hook surface:
+
+1. Edit `.agents/taskflow/config.ts` (or a plugin file under `.agents/taskflow/plugins/`).
+2. Run a small smoke task with the mock adapter to validate hooks fire as expected:
+
+   ```bash
+   HARNESS_ADAPTER_OVERRIDE=mock HARNESS_NO_TTY=1 \
+     HARNESS_RUNS_DIR=/tmp/tf-smoke npx tsx tasks/<smoke>.ts
+   ```
+
+3. Inspect `data/runs/<runId>/events.jsonl` (or `/tmp/tf-smoke/<runId>/events.jsonl`) to confirm the event sequence, hook ordering, and any retries.
+4. Inspect `data/runs/<runId>/leaves/<leafId>/todos.json` to confirm what got tracked when relying on the verify-loop.
+5. Once the smoke run looks right, run the real harness against live adapters.
+
+The mock adapter is the fastest feedback loop for hook authoring — it costs zero tokens, supports `continueAfterDone`, and emits the same `RunEvent` shape as production adapters.
