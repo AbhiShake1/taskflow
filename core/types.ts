@@ -28,6 +28,15 @@ export type LeafSpec = {
     jsonSchema: Record<string, unknown>;
     _zodSchema?: unknown;
   };
+  /**
+   * Explicit DAG edges. When set, the engine waits for every listed leaf id to
+   * resolve (via its own in-flight promise) before this leaf runs
+   * `checkClaimConflicts` / `beforeSession` / spawn. Promises are registered
+   * lazily on `leaf()` entry, so dependers scheduled after dependees still
+   * find them. Unknown ids throw; failed dependencies cascade ("dependency
+   * failed — <msg>").
+   */
+  dependsOn?: string[];
 };
 
 export type LeafStatus = 'pending' | 'running' | 'done' | 'error' | 'aborted' | 'timeout' | 'plan';
@@ -120,4 +129,6 @@ export type Ctx = {
   _harnessName?: string;
   /** Internal: plugin ctx builders, applied to every HookCtx so per-session hooks see ctx.plugins.<name>. */
   _pluginCtxBuilders?: import('./plugin').ComposedPluginCtxBuilder[];
+  /** Internal: per-leaf promises keyed by spec.id, used for dependsOn wiring. */
+  _leafPromises?: Map<string, Promise<LeafResult>>;
 };

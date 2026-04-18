@@ -601,3 +601,450 @@ describe('lifecycle: ctx.session inherits hooks for child sessions', () => {
     expect(seenSessionIds).toContain('child');
   });
 });
+
+describe('lifecycle: ctx.steer proxy fires before/after hooks', () => {
+  it('beforeSteer receives content and afterSteer sees the mutated content; handle.steer is called', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+
+    const beforeSpy = vi.fn();
+    const afterSpy = vi.fn();
+    const handlers: Partial<HookHandlers> = {
+      beforeSteer: async (_ctx, payload) => {
+        beforeSpy(payload);
+        return { content: `${payload.content}!` };
+      },
+      afterSteer: async (_ctx, payload) => {
+        afterSpy(payload);
+      },
+      afterSpawn: async (ctx) => {
+        await ctx.steer('hello');
+      },
+    };
+
+    await harness(
+      'ctx-steer',
+      {
+        runsDir,
+        runId: 'ctx-steer',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount(handlers);
+        await leaf(h, { id: 'l', agent: 'claude-code', task: 'go' });
+      },
+    );
+
+    expect(beforeSpy).toHaveBeenCalledWith(expect.objectContaining({ leafId: 'l', content: 'hello' }));
+    expect(afterSpy).toHaveBeenCalledWith(expect.objectContaining({ leafId: 'l', content: 'hello!' }));
+
+    const events = await readEvents(join(runsDir, 'ctx-steer'));
+    const steers = events.filter((e) => e.t === 'steer');
+    // The mock's steer() pushes a transcript event into the channel (which
+    // then flows through beforeSteer in the drain loop). Proof that the
+    // proxy reached handle.steer.
+    expect(steers.length).toBeGreaterThan(0);
+  });
+});
+
+describe('lifecycle: ctx.abort proxy fires before/after hooks and respects cancel', () => {
+  it('beforeAbort cancel prevents handle.abort from being invoked', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+    const spawned = { abortCalled: 0 };
+    const wrapped: typeof adapter = {
+      ...adapter,
+      spawn(spec, sctx) {
+        const h = adapter.spawn(spec, sctx);
+        const origAbort = h.abort.bind(h);
+        return {
+          ...h,
+          async abort(reason?: string) {
+            spawned.abortCalled++;
+            return origAbort(reason);
+          },
+        };
+      },
+    };
+
+    const beforeSpy = vi.fn();
+    const afterSpy = vi.fn();
+    const handlers: Partial<HookHandlers> = {
+      beforeAbort: async (_ctx, payload) => {
+        beforeSpy(payload);
+        return { cancel: true };
+      },
+      afterAbort: async (_ctx, payload) => {
+        afterSpy(payload);
+      },
+      afterSpawn: async (ctx) => {
+        await ctx.abort('because');
+      },
+    };
+
+    await harness(
+      'ctx-abort-cancel',
+      {
+        runsDir,
+        runId: 'ctx-abort-cancel',
+        adapterOverride: async () => wrapped,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount(handlers);
+        await leaf(h, { id: 'l', agent: 'claude-code', task: 'go' });
+      },
+    );
+
+    expect(beforeSpy).toHaveBeenCalledWith(expect.objectContaining({ leafId: 'l', reason: 'because' }));
+    expect(spawned.abortCalled).toBe(0);
+    expect(afterSpy).not.toHaveBeenCalled();
+  });
+
+  it('without cancel, handle.abort runs and afterAbort fires', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+    const spawned = { abortCalled: 0 };
+    const wrapped: typeof adapter = {
+      ...adapter,
+      spawn(spec, sctx) {
+        const h = adapter.spawn(spec, sctx);
+        const origAbort = h.abort.bind(h);
+        return {
+          ...h,
+          async abort(reason?: string) {
+            spawned.abortCalled++;
+            return origAbort(reason);
+          },
+        };
+      },
+    };
+
+    const afterSpy = vi.fn();
+    const handlers: Partial<HookHandlers> = {
+      beforeAbort: async () => undefined,
+      afterAbort: async (_ctx, payload) => {
+        afterSpy(payload);
+      },
+      afterSpawn: async (ctx) => {
+        await ctx.abort('reason-x');
+      },
+    };
+
+    let caught: unknown = undefined;
+    try {
+      await harness(
+        'ctx-abort-run',
+        {
+          runsDir,
+          runId: 'ctx-abort-run',
+          adapterOverride: async () => wrapped,
+        },
+        async (h) => {
+          h.config = buildConfig();
+          h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+          h.hooks.mount(handlers);
+          await leaf(h, { id: 'l', agent: 'claude-code', task: 'go' });
+        },
+      );
+    } catch (e) {
+      // Aborted leaf → engine throws "leaf failed". That's expected here.
+      caught = e;
+    }
+    expect(spawned.abortCalled).toBeGreaterThan(0);
+    expect(afterSpy).toHaveBeenCalledWith(expect.objectContaining({ leafId: 'l', reason: 'reason-x' }));
+    expect(caught).toBeInstanceOf(Error);
+  });
+});
+
+describe('lifecycle: onError fires on engine-caught exceptions', () => {
+  it('beforeSession throw with errorPolicy throw fires onError and rethrows', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+    const onErrorSpy = vi.fn();
+    const handlers: Partial<HookHandlers> = {
+      beforeSession: async () => {
+        throw new Error('boom-before-session');
+      },
+      onError: async (_ctx, payload) => {
+        onErrorSpy(payload);
+      },
+    };
+
+    let caught: unknown = undefined;
+    try {
+      await harness(
+        'onerror-throw',
+        {
+          runsDir,
+          runId: 'onerror-throw',
+          adapterOverride: async () => adapter,
+        },
+        async (h) => {
+          h.config = buildConfig();
+          h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+          h.hooks.mount(handlers);
+          await leaf(h, { id: 'l', agent: 'claude-code', task: 'go' });
+        },
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/boom-before-session/);
+    expect(onErrorSpy).toHaveBeenCalled();
+    const payload = onErrorSpy.mock.calls[0][0] as { leafId?: string; error: Error };
+    expect(payload.leafId).toBe('l');
+    expect(payload.error.message).toMatch(/boom-before-session/);
+  });
+
+  it('onError returning swallow resolves leaf with synthetic error-status result', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+    const handlers: Partial<HookHandlers> = {
+      beforeSession: async () => {
+        throw new Error('boom-swallowed');
+      },
+      onError: async () => ({ swallow: true }),
+    };
+
+    let result: Awaited<ReturnType<typeof leaf>> | undefined;
+    await harness(
+      'onerror-swallow',
+      {
+        runsDir,
+        runId: 'onerror-swallow',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount(handlers);
+        result = await leaf(h, { id: 'l', agent: 'claude-code', task: 'go' });
+      },
+    );
+    expect(result).toBeDefined();
+    expect(result!.status).toBe('error');
+    expect(result!.error).toMatch(/boom-swallowed/);
+  });
+});
+
+describe('lifecycle: re-spawn re-resolves adapter', () => {
+  it('swapped _adapterOverride before re-spawn uses the new adapter', async () => {
+    // Adapter A runs once; verify hook forces retry. Before re-spawn, a hook
+    // swaps h._adapterOverride to adapter B. The re-spawn must use B.
+    const usedByA: string[] = [];
+    const usedByB: string[] = [];
+
+    const mkAdapter = (label: string, bucket: string[]) => {
+      const base = createMockAdapter({ turns: [{ assistantText: `${label}-reply` }] });
+      // Force re-spawn path (not continueAfterDone) by disabling resume.
+      const noResume: typeof base = {
+        ...base,
+        spawn(spec, sctx) {
+          bucket.push(spec.task);
+          const h = base.spawn(spec, sctx);
+          return { ...h, supportsResume: false, continueAfterDone: undefined };
+        },
+      };
+      return noResume;
+    };
+    const adapterA = mkAdapter('A', usedByA);
+    const adapterB = mkAdapter('B', usedByB);
+
+    let verifyCalls = 0;
+    const handlers: Partial<HookHandlers> = {
+      verifyTaskComplete: async (ctx) => {
+        verifyCalls++;
+        if (verifyCalls === 1) {
+          // Swap the override so the re-spawn picks up B.
+          (ctx.sessionScope as { spec: { id: string } } | undefined); // touch to avoid lint
+          return { done: false, remaining: ['more'], steerWith: 'keep going' };
+        }
+        return { done: true };
+      },
+    };
+
+    await harness(
+      'respawn-readapt',
+      {
+        runsDir,
+        runId: 'respawn-readapt',
+        adapterOverride: async () => adapterA,
+      },
+      async (h) => {
+        h.config = buildConfig({ maxRetries: 3 });
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount(handlers);
+        // Swap the override right before we dispatch the leaf, but the first
+        // spawn has already captured adapterA via resolveCurrentAdapter at
+        // leaf entry. Re-spawn happens after verify asks for retry — at that
+        // point our override below wins because resolveCurrentAdapter runs fresh.
+        const origOverride = h._adapterOverride;
+        h._adapterOverride = async (agent) => {
+          // First resolution path: still return A. After verify says retry,
+          // our override returns B — we trigger the swap inline via a
+          // simple counter (first call → A, subsequent → B).
+          if (usedByA.length === 0) {
+            return origOverride ? origOverride(agent) : adapterA;
+          }
+          return adapterB;
+        };
+        await leaf(h, { id: 'l', agent: 'claude-code', task: 'do' });
+      },
+    );
+
+    expect(usedByA.length).toBe(1);
+    expect(usedByB.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('lifecycle: dependsOn DAG wiring', () => {
+  it('B dependsOn A — B spawns only after A completes', async () => {
+    const adapter = createMockAdapter({
+      turns: [
+        { assistantText: 'A done', delayMs: 50 },
+        { assistantText: 'B done', delayMs: 10 },
+      ],
+    });
+
+    const spawns: Record<string, number> = {};
+    const dones: Record<string, number> = {};
+
+    await harness(
+      'dep-simple',
+      {
+        runsDir,
+        runId: 'dep-simple',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount({
+          afterSpawn: async (_ctx, payload) => {
+            spawns[payload.spec.id] = Date.now();
+          },
+          afterTaskDone: async (_ctx, payload) => {
+            dones[payload.spec.id] = Date.now();
+          },
+        });
+
+        await Promise.all([
+          leaf(h, { id: 'a', agent: 'claude-code', task: 'a task' }),
+          leaf(h, { id: 'b', agent: 'claude-code', task: 'b task', dependsOn: ['a'] }),
+        ]);
+      },
+    );
+
+    expect(spawns['a']).toBeDefined();
+    expect(spawns['b']).toBeDefined();
+    expect(dones['a']).toBeDefined();
+    // B's spawn must happen at or after A's completion.
+    expect(spawns['b']!).toBeGreaterThanOrEqual(dones['a']!);
+  });
+
+  it('dependsOn failure cascades with a descriptive message', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'any' }] });
+    const handlers: Partial<HookHandlers> = {
+      beforeSession: async (_ctx, payload) => {
+        if (payload.spec.id === 'a') {
+          throw new Error('A exploded');
+        }
+      },
+    };
+
+    let bCaught: unknown = undefined;
+    let aCaught: unknown = undefined;
+    await harness(
+      'dep-cascade',
+      {
+        runsDir,
+        runId: 'dep-cascade',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount(handlers);
+        const results = await Promise.allSettled([
+          leaf(h, { id: 'a', agent: 'claude-code', task: 'a' }),
+          leaf(h, { id: 'b', agent: 'claude-code', task: 'b', dependsOn: ['a'] }),
+        ]);
+        if (results[0].status === 'rejected') aCaught = results[0].reason;
+        if (results[1].status === 'rejected') bCaught = results[1].reason;
+      },
+    );
+    expect(aCaught).toBeInstanceOf(Error);
+    expect(bCaught).toBeInstanceOf(Error);
+    expect((bCaught as Error).message).toMatch(/dependency failed/);
+  });
+
+  it('dependsOn on an unknown id throws with a clear message', async () => {
+    const adapter = createMockAdapter({ turns: [{ assistantText: 'ok' }] });
+    let caught: unknown = undefined;
+    await harness(
+      'dep-unknown',
+      {
+        runsDir,
+        runId: 'dep-unknown',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        try {
+          await leaf(h, { id: 'c', agent: 'claude-code', task: 'c', dependsOn: ['never-registered'] });
+        } catch (e) {
+          caught = e;
+        }
+      },
+    );
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/never-registered/);
+    expect((caught as Error).message).toMatch(/no leaf with that id/);
+  });
+
+  it('dependsOn multi — C waits for both A and B', async () => {
+    const adapter = createMockAdapter({
+      turns: [
+        { assistantText: 'A', delayMs: 40 },
+        { assistantText: 'B', delayMs: 20 },
+        { assistantText: 'C', delayMs: 5 },
+      ],
+    });
+    const spawns: Record<string, number> = {};
+    const dones: Record<string, number> = {};
+
+    await harness(
+      'dep-multi',
+      {
+        runsDir,
+        runId: 'dep-multi',
+        adapterOverride: async () => adapter,
+      },
+      async (h) => {
+        h.config = buildConfig();
+        h.hooks = new HookRegistry({ errorPolicy: 'throw' });
+        h.hooks.mount({
+          afterSpawn: async (_ctx, payload) => {
+            spawns[payload.spec.id] = Date.now();
+          },
+          afterTaskDone: async (_ctx, payload) => {
+            dones[payload.spec.id] = Date.now();
+          },
+        });
+
+        await Promise.all([
+          leaf(h, { id: 'a', agent: 'claude-code', task: 'a' }),
+          leaf(h, { id: 'b', agent: 'claude-code', task: 'b' }),
+          leaf(h, { id: 'c', agent: 'claude-code', task: 'c', dependsOn: ['a', 'b'] }),
+        ]);
+      },
+    );
+
+    expect(dones['a']).toBeDefined();
+    expect(dones['b']).toBeDefined();
+    expect(spawns['c']).toBeDefined();
+    expect(spawns['c']!).toBeGreaterThanOrEqual(dones['a']!);
+    expect(spawns['c']!).toBeGreaterThanOrEqual(dones['b']!);
+  });
+});

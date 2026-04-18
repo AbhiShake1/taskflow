@@ -84,6 +84,13 @@ export interface SessionSpec<S extends ZodTypeAny = ZodTypeAny> {
    * the unified set via `ctx.todos.list()`.
    */
   todos?: string[];
+  /**
+   * Declarative DAG edges: ids of sessions that must complete before this
+   * session starts. Ids refer to the `id` arg passed to other `session()`
+   * calls in the same harness run. Unknown ids throw; a failed dependency
+   * cascades to this session as "dependency failed — <msg>".
+   */
+  dependsOn?: string[];
 }
 
 /**
@@ -148,6 +155,7 @@ function toEngineSpec(
   if (spec.timeoutMs !== undefined) out.timeoutMs = spec.timeoutMs;
   if (spec.rulesPrefix !== undefined) out.rulesPrefix = spec.rulesPrefix;
   if (spec.todos !== undefined) out.todos = spec.todos;
+  if (spec.dependsOn !== undefined) out.dependsOn = spec.dependsOn;
   if (spec.schema !== undefined) {
     // Zod 4 exposes a native JSON-Schema export — prefer it over the
     // `zod-to-json-schema` package (which lags behind zod 4's internal shape).

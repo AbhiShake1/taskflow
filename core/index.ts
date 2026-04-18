@@ -127,6 +127,7 @@ export async function harness(
     config: resolvedConfig,
     _harnessName: name,
     _pluginCtxBuilders: composed.ctxBuilders,
+    _leafPromises: new Map<string, Promise<LeafResult>>(),
   };
 
   // Build a baseline HookCtx for harness/phase scope (no session yet).
@@ -270,6 +271,61 @@ function buildHookCtx(
 ): HookCtx {
   const harnessName = (h as Ctx & { _harnessName?: string })._harnessName ?? 't';
   const config = h.config ?? DEFAULT_CONFIG;
+
+  // steer/abort proxies fire their before/after hooks around the live handle
+  // attached to the current HookCtx (set by sessionHookCtx). No-op when we're
+  // not in a session scope (harness/phase scope handlers can still call them,
+  // but without a handle there's nothing to steer/abort). The proxies intentionally
+  // use partial.handle / partial.sessionScope captured at ctx-build time so each
+  // fired hook sees the same handle it was constructed with.
+  const steerProxy: HookCtx['steer'] = async (text: string) => {
+    const handle = partial.handle;
+    const scope = partial.sessionScope;
+    if (!handle || !scope) return;
+    const ev: RunEvent = { t: 'steer', leafId: scope.id, content: text, ts: Date.now() };
+    let finalContent = text;
+    if (h.hooks?.has('beforeSteer')) {
+      const ret = await h.hooks.fire(
+        'beforeSteer',
+        buildHookCtx(h, { hookName: 'beforeSteer', sessionScope: scope, handle, event: ev, todos: partial.todos }),
+        { leafId: scope.id, content: text },
+      );
+      if (ret && (ret as { cancel?: boolean }).cancel) return;
+      if (ret && typeof (ret as { content?: string }).content === 'string') {
+        finalContent = (ret as { content: string }).content;
+      }
+    }
+    await handle.steer(finalContent);
+    if (h.hooks?.has('afterSteer')) {
+      await h.hooks.fire(
+        'afterSteer',
+        buildHookCtx(h, { hookName: 'afterSteer', sessionScope: scope, handle, event: ev, todos: partial.todos }),
+        { leafId: scope.id, content: finalContent },
+      );
+    }
+  };
+  const abortProxy: HookCtx['abort'] = async (reason?: string) => {
+    const handle = partial.handle;
+    const scope = partial.sessionScope;
+    if (!handle || !scope) return;
+    if (h.hooks?.has('beforeAbort')) {
+      const ret = await h.hooks.fire(
+        'beforeAbort',
+        buildHookCtx(h, { hookName: 'beforeAbort', sessionScope: scope, handle, todos: partial.todos }),
+        { leafId: scope.id, reason },
+      );
+      if (ret && (ret as { cancel?: boolean }).cancel) return;
+    }
+    await handle.abort(reason);
+    if (h.hooks?.has('afterAbort')) {
+      await h.hooks.fire(
+        'afterAbort',
+        buildHookCtx(h, { hookName: 'afterAbort', sessionScope: scope, handle, todos: partial.todos }),
+        { leafId: scope.id, reason },
+      );
+    }
+  };
+
   const c = createHookCtx(
     partial,
     {
@@ -284,8 +340,8 @@ function buildHookCtx(
       plugins: {} as HookCtx['plugins'],
       state: new Map<string, unknown>(),
       emit: (ev: RunEvent) => { h.bus.publish(ev); },
-      steer: async () => {},
-      abort: async () => {},
+      steer: steerProxy,
+      abort: abortProxy,
       session: async (id, spec) => {
         const mod = await import('../api/index');
         return mod.runSessionWithCtx(h, id, spec as unknown as Parameters<typeof mod.runSessionWithCtx>[2]);
@@ -534,17 +590,63 @@ function sessionHookCtx(
   } as Partial<HookCtx> & { hookName: HookName; todos?: HookCtx['todos'] });
 }
 
+async function resolveCurrentAdapter(h: Ctx, agent: LeafSpec['agent']): Promise<AgentAdapter> {
+  const runnerOverride = getRunner()?.adapterOverride;
+  if (h._adapterOverride) return h._adapterOverride(agent);
+  if (runnerOverride) return runnerOverride(agent);
+  return resolveAdapter(agent);
+}
+
 export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
-  checkClaimConflicts(h, spec);
-  h._activeClaims.set(spec.id, spec.claims ?? []);
+  // Register this leaf's own promise up-front so late-starting dependers can
+  // find it via h._leafPromises.
+  let resolveMyPromise!: (r: LeafResult) => void;
+  let rejectMyPromise!: (e: unknown) => void;
+  let myPromiseSettled = false;
+  const myPromise = new Promise<LeafResult>((res, rej) => {
+    resolveMyPromise = (r) => { myPromiseSettled = true; res(r); };
+    rejectMyPromise = (e) => { myPromiseSettled = true; rej(e); };
+  });
+  // Suppress unhandled-rejection warning when no depender awaits this promise.
+  myPromise.catch(() => {});
+  h._leafPromises?.set(spec.id, myPromise);
+
+  // Await declared dependencies BEFORE claim-conflict checks so a dep that
+  // releases its claims on completion doesn't collide with us.
+  if (spec.dependsOn && spec.dependsOn.length > 0) {
+    const depPromises: Array<Promise<LeafResult>> = [];
+    for (const id of spec.dependsOn) {
+      const p = h._leafPromises?.get(id);
+      if (!p) {
+        const err = new Error(`leaf "${spec.id}" dependsOn "${id}" but no leaf with that id has been registered`);
+        rejectMyPromise(err);
+        throw err;
+      }
+      depPromises.push(p);
+    }
+    try {
+      await Promise.all(depPromises);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const wrapped = new Error(`leaf "${spec.id}" aborted: dependency failed — ${msg}`);
+      rejectMyPromise(wrapped);
+      throw wrapped;
+    }
+  }
 
   try {
-    const runnerOverride = getRunner()?.adapterOverride;
-    let adapter: AgentAdapter = h._adapterOverride
-      ? await h._adapterOverride(spec.agent)
-      : runnerOverride
-      ? await runnerOverride(spec.agent)
-      : await resolveAdapter(spec.agent);
+    checkClaimConflicts(h, spec);
+  } catch (err) {
+    rejectMyPromise(err);
+    throw err;
+  }
+  h._activeClaims.set(spec.id, spec.claims ?? []);
+
+  // Top-level try/catch fires `onError` on any uncaught exception from the
+  // leaf body. When a handler returns `{swallow: true}`, we surface a
+  // synthetic error-status LeafResult instead of rethrowing.
+  const runLeafBody = async (): Promise<LeafResult> => {
+    let adapter: AgentAdapter = await resolveCurrentAdapter(h, spec.agent);
 
     const config = h.config ?? DEFAULT_CONFIG;
     const hooks = h.hooks;
@@ -779,6 +881,10 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
           ...workingSpec,
           task: `${workingSpec.task}\n\n${steerText}`,
         };
+        // Re-resolve the adapter: a hook may have swapped h._adapterOverride
+        // between the original spawn and now, so always use the current
+        // resolution path rather than the captured-at-entry `adapter`.
+        adapter = await resolveCurrentAdapter(h, augmented.agent);
         const next = await spawnDrainWait({
           h, spec: augmented, spawnCtx, adapter, todoStore, attempt,
         });
@@ -831,9 +937,47 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
     }
 
     return { ...result, proofPath };
+  };
+
+  try {
+    let leafResult: LeafResult;
+    try {
+      leafResult = await runLeafBody();
+    } catch (err) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      let swallowed = false;
+      if (h.hooks?.has('onError')) {
+        const ret = await h.hooks.fire(
+          'onError',
+          buildHookCtx(h, { hookName: 'onError', sessionScope: { id: spec.id, spec, attempt: 0 } }),
+          { leafId: spec.id, error: errObj },
+        );
+        if (ret && (ret as { swallow?: boolean }).swallow) swallowed = true;
+      }
+      if (swallowed) {
+        const synthetic: LeafResult = {
+          leafId: spec.id,
+          status: 'error',
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          error: errObj.message,
+        };
+        resolveMyPromise(synthetic);
+        return synthetic;
+      }
+      rejectMyPromise(errObj);
+      throw errObj;
+    }
+    resolveMyPromise(leafResult);
+    return leafResult;
   } finally {
     h._activeClaims.delete(spec.id);
     getRunner()?.activeHandles.delete(spec.id);
+    if (!myPromiseSettled) {
+      // Defensive: shouldn't happen, but ensure the promise is always settled
+      // so dependers don't hang.
+      rejectMyPromise(new Error(`leaf "${spec.id}" ended without settling its promise`));
+    }
   }
 }
 
