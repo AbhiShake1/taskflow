@@ -293,6 +293,23 @@ export async function stage(
   if (threw !== undefined) throw threw;
 }
 
+/**
+ * Detects a circular dependency involving a task that is about to be added.
+ *
+ * Uses depth-first search starting from each direct dependency of the new task,
+ * walking the existing `depsMap` to see whether any path leads back to `startId`.
+ *
+ * `startId` and `startDeps` are passed separately rather than looked up from
+ * `depsMap` because the new task has not yet been inserted into the map at call
+ * time — so there is nothing to look up.
+ *
+ * @param startId   - The id of the task being added (the potential cycle root).
+ * @param startDeps - The declared dependencies of the task being added.
+ * @param depsMap   - Dependency map for all already-registered tasks.
+ * @returns The full cycle path as an ordered array of task ids if a cycle is
+ *          found (first and last element are both `startId`), or `null` if
+ *          the graph remains acyclic.
+ */
 function detectCycle(
   startId: string,
   startDeps: string[],
