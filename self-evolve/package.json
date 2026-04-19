@@ -10,7 +10,7 @@
     "watch": "tsx watch.ts"
   },
   "dependencies": {
-    "taskflow-sdk": "^0.1.6",
+    "taskflow-sdk": "^0.1.7",
     "zod": "^4.3.6"
   },
   "devDependencies": {

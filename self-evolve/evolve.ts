@@ -29,7 +29,7 @@
 //   SELF_EVOLVE_PUSH=1 npm start                 # also git push after each iter
 //   SELF_EVOLVE_MAX_FIX=2 npm start              # fewer self-fix retries
 
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { taskflow } from 'taskflow-sdk';
 import { z } from 'zod';
@@ -100,15 +100,39 @@ async function withRetries<T>(
   throw lastErr;
 }
 
+// Determine which iterations have already been completed by inspecting
+// data/frames/. An iteration is considered done iff at least one frame PNG
+// exists for it (the harness only writes a frame after validate-${iter}
+// passes, and the commit-${iter} session that follows is the final step).
+async function discoverCompletedIters(): Promise<Map<string, string>> {
+  const completed = new Map<string, string>();
+  try {
+    const entries = await readdir(FRAMES_DIR);
+    for (const name of entries) {
+      const match = name.match(/^iter-(\d{2})-.+\.png$/);
+      if (match) completed.set(match[1]!, resolve(FRAMES_DIR, name));
+    }
+  } catch {
+    // FRAMES_DIR doesn't exist yet — fresh run, nothing to skip.
+  }
+  return completed;
+}
+
 async function main(): Promise<void> {
   const validationSystemPrompt = await readFile(VALIDATION_PROMPT_PATH, 'utf8');
+  const alreadyDone = await discoverCompletedIters();
+  if (alreadyDone.size > 0) {
+    console.error(`[self-evolve] resume: ${alreadyDone.size} iter(s) already have proof frames — skipping: ${[...alreadyDone.keys()].sort().join(', ')}`);
+  }
 
   await taskflow('self-evolve').run(async ({ phase, session }) => {
-    const frameLog: string[] = [];
+    const frameLog: string[] = [...alreadyDone.values()].sort();
     const failedIters: Array<{ iter: string; error: string }> = [];
 
     for (let i = 0; i < ITERATIONS; i++) {
       const iter = String(i).padStart(2, '0');
+
+      if (alreadyDone.has(iter)) continue;
 
       try {
         await phase(`iter-${iter}`, async () => {
