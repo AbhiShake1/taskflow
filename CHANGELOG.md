@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2026-04-19
+
+### Docs
+- Full `taskflow add` reference in README.md — every source format (all 7), full flag table, detection order, file-layout diagram, publishing walkthrough, item-type table, CI usage.
+- SKILL.md expanded so AI assistants have a complete decision tree for choosing source forms, wiring registries, and handling `--yes` vs `--overwrite` correctly.
+- Both README and SKILL now recommend `npx @taskflow-corp/cli@latest <cmd>` form so consumers get the newest version on every invocation.
+
+### Internal
+- `cli.version()` bumped to 0.1.21. MCP server advertises the same version.
+
 ## [0.1.20] - 2026-04-19
 
 ### Added

@@ -28,58 +28,144 @@ await taskflow('hello').run(async ({ phase, session }) => {
 
 ## Install harnesses from anywhere — `taskflow add`
 
-Shadcn-style distribution: drop any harness into any project with a single command. Source forms accepted:
+Shadcn-style distribution: drop any harness into any project with a single command. You never need to install the package locally — `npx @taskflow-corp/cli@latest <command>` works from any directory and always pulls the newest version.
+
+### Source formats (every form accepted by `add`)
 
 ```sh
-# named (resolves via built-in @taskflow registry)
-npx @taskflow-corp/cli add ui-harness-trio
+# 1. Bare name — built-in @taskflow registry
+#    resolves against TASKFLOW_REGISTRY_URL (default https://taskflow.sh/r/{name}.json)
+npx @taskflow-corp/cli@latest add ui-harness-trio
 
-# namespaced (private or third-party registries configured in taskflow.json)
-npx @taskflow-corp/cli add @acme/e2e-video-tests
+# 2. Namespaced — @ns/name, looked up in taskflow.json `registries` map
+npx @taskflow-corp/cli@latest add @acme/e2e-video-tests
+npx @taskflow-corp/cli@latest add @acme/e2e-video-tests@^1.2.0        # optional semver tail
 
-# GitHub shortcut (degit-style)
-npx @taskflow-corp/cli add user/repo
-npx @taskflow-corp/cli add user/repo/path/to/item.json#v1.2.0
+# 3. Raw URL — any server returning a valid registry-item.json
+npx @taskflow-corp/cli@latest add https://example.com/r/harness.json
+npx @taskflow-corp/cli@latest add https://raw.githubusercontent.com/you/repo/main/r/x.json
 
-# raw URL
-npx @taskflow-corp/cli add https://example.com/r/harness.json
+# 4. Local file — absolute, relative, or ~/-prefixed
+npx @taskflow-corp/cli@latest add ./my-harness.json
+npx @taskflow-corp/cli@latest add /abs/path/harness.json
+npx @taskflow-corp/cli@latest add ~/shared/harness.json
 
-# local file
-npx @taskflow-corp/cli add ./my-harness.json
+# 5. Bare GitHub shortcut (degit-style) — defaults to github.com
+npx @taskflow-corp/cli@latest add user/repo
+npx @taskflow-corp/cli@latest add user/repo/path/to/item.json         # subpath
+npx @taskflow-corp/cli@latest add user/repo/path/to/item.json#v1.2.0  # branch | tag | sha
 
-# fully qualified (Terraform grammar: type::url//subpath?ref=&sha256=&depth=)
-npx @taskflow-corp/cli add git::ssh://git@host/org/repo.git//items/foo?ref=main
+# 6. Explicit host shortcut — github: / gitlab: / bitbucket:
+npx @taskflow-corp/cli@latest add github:user/repo/items/foo.json#main
+npx @taskflow-corp/cli@latest add gitlab:user/repo/items/foo.json#v1
+npx @taskflow-corp/cli@latest add bitbucket:user/repo/items/foo.json
+
+# 7. Fully qualified (Terraform grammar, for private SSH, integrity pinning, etc.)
+#    Format: <type>::<url>[//<subpath>][?ref=<ref>&sha256=<hex>&depth=<n>]
+npx @taskflow-corp/cli@latest add git::https://host/org/repo.git//items/foo.json?ref=v1
+npx @taskflow-corp/cli@latest add git::ssh://git@github.com/you/priv.git//items/foo.json?ref=main
+npx @taskflow-corp/cli@latest add https::https://example.com/bundle.json?sha256=abc123
+npx @taskflow-corp/cli@latest add file::./local/harness.json
 ```
 
-Every form fetches → validates → writes files → patches `.agents/taskflow/config.ts` → updates `taskflow.lock`. The first `add` in a project auto-runs `init` to scaffold `taskflow.json`, config, and dirs.
+**Detection order** (first match wins, mirrors shadcn's resolver):
 
-Adjacent commands:
+1. ends with `.json` and not a URL → **local file**
+2. `git::` / `https::` / `file::` prefix → **fully qualified**
+3. `github:` / `gitlab:` / `bitbucket:` prefix → **host shortcut**
+4. parses as a URL → **raw URL**
+5. `@ns/name` → **namespace lookup**
+6. `user/repo[/subpath][#ref]` → **bare GitHub shortcut**
+7. otherwise → **bare name** (built-in `@taskflow` registry)
+
+Every form resolves to: fetch → validate (Zod) → write files → patch `.agents/taskflow/config.ts` (ts-morph AST merge) → merge `.env.local` → upsert `taskflow.lock`.
+
+### Multiple sources in one call
+
+```sh
+npx @taskflow-corp/cli@latest add ui-harness-trio @acme/video-tests ./local.json
+```
+
+`registryDependencies` from each item are resolved transitively (BFS + Kahn topo sort with cycle tolerance), so one command can pull a whole dependency graph.
+
+### Lifecycle commands
 
 | Command | Purpose |
 |---|---|
-| `taskflow init` | Create `taskflow.json` + `.agents/taskflow/config.ts` |
+| `taskflow init` | Scaffold `taskflow.json` + `.agents/taskflow/config.ts` + harness/rules dirs (auto-invoked by `add` on first use) |
 | `taskflow add <source...>` | Install one or more harnesses |
-| `taskflow view <source>` | Print the resolved registry item JSON (no write) |
-| `taskflow list` | Show installed harnesses from `taskflow.lock` |
-| `taskflow search <query>` | Fuzzy-match against the public registry index |
-| `taskflow update [name...]` | Re-resolve and refresh installed harnesses |
-| `taskflow remove <name>` | Uninstall |
-| `taskflow apply <preset>` | Re-install with `--overwrite` (shadcn-style re-skin) |
-| `taskflow build [input]` | Publisher: inline file contents, emit `r/*.json` |
-| `taskflow mcp` | Start the MCP server over stdio (tools: `list_harnesses`, `search`, `install`) |
+| `taskflow view <source>` | Print the resolved registry-item JSON (no write, no install) |
+| `taskflow list` | List installed harnesses from `taskflow.lock` |
+| `taskflow search <query>` | Fuzzy-match against the public registries index |
+| `taskflow update [name...]` | Re-resolve; rewrite files + lockfile (`--all` implied if no names) |
+| `taskflow remove <name>` | Delete installed files + lockfile entry |
+| `taskflow apply <preset>` | `add --overwrite` alias (shadcn-style re-skin) |
+| `taskflow build [input]` | **Publisher**: inline source file contents, emit `r/*.json` + `r/registry.json` |
+| `taskflow mcp` | Start MCP server over stdio (tools: `list_harnesses`, `search`, `install`) |
+| `taskflow run <harness.ts>` | Execute an installed harness (TUI if TTY else JSONL) |
+| `taskflow watch <harness.ts>` | Alias for `run` |
+| `taskflow plan <harness.ts>` | Static AST preview — no LLM calls |
 
-Flags on `add`: `-y/--yes`, `-o/--overwrite`, `--dry-run`, `--diff`, `--view`, `-p/--path <dir>`, `-c/--cwd <dir>`, `-s/--silent`, `--frozen`, `--skip-adapter-check`.
+### Flag reference for `add`
+
+| Flag | Default | Effect |
+|---|---|---|
+| `-y, --yes` | `false` | Skip all confirmation prompts. On existing-file conflicts, **skips** the file (does NOT auto-overwrite — use `--overwrite` for that). |
+| `-o, --overwrite` | `false` | Replace existing files without prompt. Orthogonal to `--yes`. |
+| `--dry-run` | `false` | Resolve + validate, print what would change, do not write. |
+| `--diff` | `false` | Like `--dry-run` with a diff. Implies `--dry-run`. |
+| `--view` | `false` | Resolve and print the registry-item JSON to stdout. Do not write, do not preflight. |
+| `-p, --path <dir>` | `harnessDir` from `taskflow.json` | Override install directory for this run. |
+| `-c, --cwd <dir>` | `process.cwd()` | Run as if invoked from `<dir>`. |
+| `-s, --silent` | `false` | Mute all `@clack/prompts` output. On conflicts, skips like `--yes`. |
+| `--frozen` | `false` | CI mode: error if resolved items don't match `taskflow.lock`. |
+| `--skip-adapter-check` | `false` | Skip the `requiredAdapters` preflight check. |
+
+### Getting started in any project (30 seconds)
+
+```sh
+# From any repo on your machine:
+cd /path/to/some/project
+
+# First add auto-scaffolds taskflow.json + .agents/taskflow/config.ts + dirs
+npx @taskflow-corp/cli@latest add <your-source> -y --skip-adapter-check
+
+# See what was installed
+npx @taskflow-corp/cli@latest list
+
+# Run it
+npx @taskflow-corp/cli@latest run .agents/taskflow/harness/<name>.ts
+```
+
+### File layout after `init` + `add`
+
+```
+project/
+├── taskflow.json                     # config + registries map
+├── taskflow.lock                     # content-addressed install manifest
+├── .env.local                        # auto-loaded; ${VAR} expansion for registries
+└── .agents/
+    └── taskflow/
+        ├── config.ts                 # hooks, plugins, scope
+        ├── harness/<name>.ts         # installed harness files
+        ├── harness/plugins/<name>.ts # installed plugins
+        ├── harness/utils/<name>.ts   # installed utilities
+        ├── harness/examples/<name>.ts
+        └── rules/<name>.md           # installed rules files
+```
 
 ### Private registries with auth
 
-Put this in your project's `taskflow.json`:
-
+`taskflow.json`:
 ```jsonc
 {
   "$schema": "https://taskflow.sh/schema/taskflow.json",
   "version": "1",
   "registries": {
+    // simple form — string URL template
     "@acme": "https://registry.acme.com/r/{name}.json",
+
+    // advanced form — per-registry headers and query params
     "@private": {
       "url": "https://api.corp.com/taskflow/{name}.json",
       "headers": { "Authorization": "Bearer ${TASKFLOW_TOKEN}" },
@@ -89,14 +175,73 @@ Put this in your project's `taskflow.json`:
 }
 ```
 
-`${VAR}` tokens are expanded from `process.env` (auto-loaded from `.env.local`). Missing vars fail pre-flight with a clear message.
+- `{name}` placeholder is **mandatory**; `{style}` is reserved for future use.
+- `${VAR_NAME}` (braces required, no `$VAR` form) interpolates from `process.env`.
+- `.env` and `.env.local` are auto-loaded before resolution.
+- Missing env vars fail pre-flight with a clear `RegistryMissingEnvironmentVariablesError`.
+- HTTP 401/403/404/410 map to specific typed errors with actionable hints.
 
 ### Publishing your own registry
 
-1. Create `registry/registry.json` listing your items (see `registry/` in this repo for an example).
-2. Store each item as a source `.ts` file referenced by `files[].path`.
-3. Run `npx @taskflow-corp/cli build` — emits `r/<item>.json` with file contents inlined plus `r/registry.json`.
-4. Host the `r/` directory anywhere (GitHub Pages, S3, your own CDN). Consumers then `taskflow add https://<your-host>/r/my-item.json` or register the namespace in their `taskflow.json`.
+1. Author `registry/registry.json`:
+   ```jsonc
+   {
+     "$schema": "https://taskflow.sh/schema/registry.json",
+     "name": "@yourname",
+     "homepage": "https://yourname.dev",
+     "items": [
+       {
+         "$schema": "https://taskflow.sh/schema/registry-item.json",
+         "name": "my-harness",
+         "type": "taskflow:harness",
+         "files": [
+           { "path": "items/my-harness.ts", "type": "taskflow:harness" }
+         ]
+       }
+     ]
+   }
+   ```
+2. Write the source `.ts` files referenced by `files[].path`.
+3. Run `npx @taskflow-corp/cli@latest build -c ./registry --output ./registry/r`.
+4. Host the emitted `r/` directory (GitHub Pages, S3, your CDN).
+5. Consumers then:
+   ```sh
+   npx @taskflow-corp/cli@latest add https://<your-host>/r/my-harness.json
+   ```
+
+See `registry/` in this repo for a worked example.
+
+### Item types (`registry-item.json` → `type`)
+
+| Type | Default destination | Notes |
+|---|---|---|
+| `taskflow:harness` | `<harnessDir>/<basename>` | Main `.ts` the user runs |
+| `taskflow:plugin` | `<harnessDir>/plugins/<basename>` | Imported from `config.ts` |
+| `taskflow:utils` | `<harnessDir>/utils/<basename>` | Shared TS |
+| `taskflow:example` | `<harnessDir>/examples/<basename>` | Sample invocation |
+| `taskflow:rules` | `<rulesDir>/<basename>` or `target` | Markdown rules |
+| `taskflow:config-patch` | Merged into `config.ts` via ts-morph AST | Not a file |
+| `taskflow:file` | `target` **(required)** | Arbitrary path incl. `~/` |
+
+### MCP integration (Claude Code / Cursor / Codex)
+
+```sh
+npx @taskflow-corp/cli@latest mcp
+```
+
+Exposes three tools over stdio:
+- `list_harnesses` — return installed harnesses from `taskflow.lock`
+- `search` — fuzzy-match the public registries index
+- `install` — delegate to `runAdd`
+
+Wire it into your MCP client config and the model can discover and install harnesses autonomously.
+
+### CI usage
+
+```sh
+# Reproducible — errors on lockfile drift
+npx @taskflow-corp/cli@latest add <source> --yes --silent --frozen
+```
 
 Full design notes: [docs/add-command-plan.md](./docs/add-command-plan.md).
 

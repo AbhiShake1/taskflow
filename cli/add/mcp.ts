@@ -110,7 +110,7 @@ export async function mcpInstall(
 
 export async function runMcp(opts: McpOptions): Promise<void> {
   const server = new Server(
-    { name: 'taskflow', version: '0.1.20' },
+    { name: 'taskflow', version: '0.1.21' },
     { capabilities: { tools: {} } },
   );
 
