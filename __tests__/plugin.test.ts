@@ -89,6 +89,25 @@ describe('composePlugins', () => {
     await expect(composePlugins([dup, dup], api())).rejects.toThrow(/duplicate plugin name "same"/);
   });
 
+  it('chainHandlers returns the last non-undefined result; undefined returns do not overwrite', async () => {
+    const pluginA: Plugin = () => ({
+      name: 'a',
+      events: {
+        onError: async () => ({ swallow: true }),
+      },
+    });
+    const pluginB: Plugin = () => ({
+      name: 'b',
+      events: {
+        onError: async () => undefined,
+      },
+    });
+
+    const composed = await composePlugins([pluginA, pluginB], api());
+    const result = await composed.events.onError!(makeCtx(), { error: new Error('boom') });
+    expect(result).toEqual({ swallow: true });
+  });
+
   it('config fragments are collected in declaration order', async () => {
     const a: Plugin = () => ({
       name: 'a',
