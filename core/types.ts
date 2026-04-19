@@ -110,6 +110,16 @@ export type LeafSummary = {
   proofPath?: string;
 };
 
+export type Manifest = {
+  name: string;
+  runId: string;
+  startedAt: number;
+  endedAt: number;
+  exitCode: number;
+  leaves: LeafSummary[];
+  stages: string[];
+};
+
 export type Ctx = {
   runId: string;
   runDir: string;                              // data/runs/{runId}

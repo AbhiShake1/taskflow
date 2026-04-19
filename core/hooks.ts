@@ -1,7 +1,7 @@
 import type { AgentHandle } from '../adapters';
 import type { EventBus } from './events';
 import type { Plugin } from './plugin';
-import type { LeafResult, LeafSpec, RunEvent } from './types';
+import type { LeafResult, LeafSpec, Manifest, RunEvent } from './types';
 
 export type HookName =
   | 'beforeHarness' | 'afterHarness'
@@ -108,7 +108,7 @@ export interface HookCtx {
 
 export type HookPayloads = {
   beforeHarness: { name: string; runId: string; runDir: string };
-  afterHarness:  { manifest: unknown; error?: Error };
+  afterHarness:  { manifest: Manifest; error?: Error };
 
   beforePhase:   { phaseId: string; parentId?: string };
   afterPhase:    { phaseId: string; status: 'done' | 'error'; error?: Error };
