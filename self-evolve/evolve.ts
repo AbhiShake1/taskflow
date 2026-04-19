@@ -77,17 +77,42 @@ const CommitResult = z.object({
   message: z.string(),
 });
 
+// Retry a session call up to `attempts` times with a unique id suffix per
+// attempt ({baseId}, {baseId}-r1, {baseId}-r2, …). Transient failures
+// (timeouts, schema mismatches, single-flight model blips) are common at
+// claude-code scale and shouldn't kill the whole 20-iter run.
+async function withRetries<T>(
+  sessionCall: (id: string) => Promise<T>,
+  baseId: string,
+  attempts: number = 3,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let a = 0; a < attempts; a++) {
+    const id = a === 0 ? baseId : `${baseId}-r${a}`;
+    try {
+      return await sessionCall(id);
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[retry] ${baseId} attempt ${a + 1}/${attempts} failed: ${msg.slice(0, 200)}`);
+    }
+  }
+  throw lastErr;
+}
+
 async function main(): Promise<void> {
   const validationSystemPrompt = await readFile(VALIDATION_PROMPT_PATH, 'utf8');
 
   await taskflow('self-evolve').run(async ({ phase, session }) => {
     const frameLog: string[] = [];
+    const failedIters: Array<{ iter: string; error: string }> = [];
 
     for (let i = 0; i < ITERATIONS; i++) {
       const iter = String(i).padStart(2, '0');
 
-      await phase(`iter-${iter}`, async () => {
-        const idea = await session(`pick-${iter}`, {
+      try {
+        await phase(`iter-${iter}`, async () => {
+        const idea = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
             `You are iteration ${i + 1} of ${ITERATIONS} in a self-evolution harness running against the taskflow-sdk repo at ${REPO_ROOT}.`,
@@ -109,9 +134,9 @@ async function main(): Promise<void> {
           ].join('\n'),
           schema: ImprovementIdea,
           timeoutMs: 360_000,
-        });
+        }), `pick-${iter}`);
 
-        await session(`implement-${iter}`, {
+        await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
             `Implement this improvement in the taskflow-sdk repo at ${REPO_ROOT}:`,
@@ -128,9 +153,8 @@ async function main(): Promise<void> {
             '- When done, ensure the file is written; no further commentary needed.',
           ].join('\n'),
           write: idea.files,
-          dependsOn: [`pick-${iter}`],
           timeoutMs: 600_000,
-        });
+        }), `implement-${iter}`);
 
         // Self-healing verify loop: lint/format/test run in parallel. If any
         // fails, spawn a `fix` session that reads the failures and tries to
@@ -204,7 +228,7 @@ async function main(): Promise<void> {
 
         const framePath = resolve(FRAMES_DIR, `iter-${iter}-${idea.verifyClaim}.png`);
 
-        const capture = await session(`capture-${iter}`, {
+        const capture = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
             `Capture a terminal frame that visually proves claim "${idea.verifyClaim}" for iteration ${iter}.`,
@@ -226,12 +250,11 @@ async function main(): Promise<void> {
             `Return the absolute PNG path and which capture method you used.`,
           ].join('\n'),
           write: [framePath],
-          dependsOn: [`lint-${iter}-a${verifyAttempt}`, `format-${iter}-a${verifyAttempt}`, `test-${iter}-a${verifyAttempt}`],
           schema: CaptureResult,
           timeoutMs: 180_000,
-        });
+        }), `capture-${iter}`);
 
-        const verdict = await session(`validate-${iter}`, {
+        const verdict = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
             validationSystemPrompt,
@@ -246,10 +269,9 @@ async function main(): Promise<void> {
             '',
             'Read the image at the frame path and apply the rules from the system prompt above. Return the ValidationVerdict JSON object.',
           ].join('\n'),
-          dependsOn: [`capture-${iter}`],
           schema: ValidationVerdict,
           timeoutMs: 180_000,
-        });
+        }), `validate-${iter}`);
 
         if (!verdict.valid) {
           throw new Error(`iter-${iter} frame validation rejected — ${verdict.reason}`);
@@ -269,7 +291,7 @@ async function main(): Promise<void> {
           'Co-Authored-By: taskflow self-evolve harness <noreply@anthropic.com>',
         ].join('\n');
 
-        await session(`commit-${iter}`, {
+        await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
             `From ${REPO_ROOT}, stage and commit this iteration's work.`,
@@ -289,11 +311,23 @@ async function main(): Promise<void> {
             '',
             'Return CommitResult: committed=true if the commit landed, sha=short sha, pushed=true/false, message=the first line of the commit message.',
           ].join('\n'),
-          dependsOn: [`validate-${iter}`],
           schema: CommitResult,
           timeoutMs: 180_000,
+        }), `commit-${iter}`);
         });
-      });
+      } catch (err) {
+        // One failed iter shouldn't kill the remaining 19. Log it, keep
+        // whatever frames/commits survived so far, and move on. The
+        // stitch-video phase downstream works with whatever we got.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[iter-${iter}] aborted: ${msg.slice(0, 300)}`);
+        failedIters.push({ iter, error: msg.slice(0, 500) });
+      }
+    }
+
+    if (failedIters.length > 0) {
+      console.error(`[self-evolve] ${failedIters.length}/${ITERATIONS} iterations failed:`);
+      for (const f of failedIters) console.error(`  - iter-${f.iter}: ${f.error}`);
     }
 
     await phase('stitch-video', async () => {
