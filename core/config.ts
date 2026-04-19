@@ -127,7 +127,7 @@ async function loadOne(absPath: string): Promise<TaskflowConfig> {
   const known = ['events', 'todos', 'hooks', 'plugins', 'scope'];
   if (!known.some((k) => k in obj)) {
     throw new Error(
-      `taskflow: failed to load config at ${absPath}: missing any of [events, todos, hooks, plugins, scope]`,
+      `taskflow: failed to load config at ${absPath}: config object contains none of the expected keys – must include at least one of: events, todos, hooks, plugins, scope`,
     );
   }
   return obj as TaskflowConfig;

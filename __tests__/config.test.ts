@@ -190,6 +190,23 @@ export default defineConfig({
     await expect(loadConfig({ home, cwd })).rejects.toThrow(file);
   });
 
+  it('throws when default export is an object with none of the known keys', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'tf-nokeys-'));
+    const cwd = home;
+    cleanup.push(home);
+
+    const file = await writeConfig(
+      home,
+      `export default {};
+`,
+    );
+
+    await expect(loadConfig({ home, cwd })).rejects.toThrow(
+      'config object contains none of the expected keys – must include at least one of: events, todos, hooks, plugins, scope',
+    );
+    await expect(loadConfig({ home, cwd })).rejects.toThrow(file);
+  });
+
   it('plugins concatenate across files in walk order', async () => {
     const home = await mkdtemp(join(tmpdir(), 'tf-plug-'));
     const cwd = join(home, 'proj');
