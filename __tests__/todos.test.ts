@@ -53,6 +53,15 @@ describe('extractTodosFromMarkdown', () => {
     ]);
   });
 
+  it('handles CRLF line endings without trailing \\r in text', () => {
+    const md = '- [ ] first\r\n- [x] second\r\n- [ ] third';
+    expect(extractTodosFromMarkdown(md)).toEqual([
+      { text: 'first', done: false },
+      { text: 'second', done: true },
+      { text: 'third', done: false },
+    ]);
+  });
+
   it('ignores lines without checkbox syntax', () => {
     const md = [
       'just some prose',
