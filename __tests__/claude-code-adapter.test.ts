@@ -16,6 +16,7 @@ async function waitFor<T>(fn: () => T | undefined | null | false, timeoutMs = 10
 }
 import type { AgentEvent, LeafSpec } from '../core/types';
 import type { SpawnCtx } from '../adapters/index';
+import { extractZodShape } from '../adapters/claude-code';
 
 /**
  * Mock `@anthropic-ai/claude-agent-sdk`.
@@ -645,5 +646,44 @@ describe('claude-code adapter', () => {
     const errEv = events.find(e => e.t === 'error') as Extract<AgentEvent, { t: 'error' }> | undefined;
     expect(errEv).toBeDefined();
     expect(errEv!.error).toBe('unknown error');
+  });
+});
+
+describe('extractZodShape', () => {
+  it('returns null for null input', () => {
+    expect(extractZodShape(null)).toBeNull();
+  });
+
+  it('returns null for a non-object primitive', () => {
+    expect(extractZodShape('string')).toBeNull();
+    expect(extractZodShape(42)).toBeNull();
+  });
+
+  it('returns .shape directly when it is a plain object (Zod 4 style)', () => {
+    const shape = { name: {}, age: {} };
+    expect(extractZodShape({ shape })).toBe(shape);
+  });
+
+  it('invokes .shape() and returns the result when it is a function (Zod 3 style)', () => {
+    const shape = { name: {}, age: {} };
+    expect(extractZodShape({ shape: () => shape })).toBe(shape);
+  });
+
+  it('returns null and swallows the error when .shape() throws', () => {
+    expect(extractZodShape({ shape: () => { throw new Error('boom'); } })).toBeNull();
+  });
+
+  it('invokes ._def.shape() and returns result when .shape is absent (Zod 3 _def thunk)', () => {
+    const shape = { id: {} };
+    expect(extractZodShape({ _def: { shape: () => shape } })).toBe(shape);
+  });
+
+  it('returns null and swallows the error when ._def.shape() throws', () => {
+    expect(extractZodShape({ _def: { shape: () => { throw new Error('boom'); } } })).toBeNull();
+  });
+
+  it('returns ._def.shape directly when it is a plain object (Zod 3 _def variant)', () => {
+    const shape = { id: {} };
+    expect(extractZodShape({ _def: { shape } })).toBe(shape);
   });
 });
