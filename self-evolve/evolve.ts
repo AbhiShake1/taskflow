@@ -39,7 +39,13 @@ const FRAMES_DIR = resolve(REPO_ROOT, 'data', 'frames');
 const VIDEO_PATH = resolve(REPO_ROOT, 'data', 'self-evolve.mp4');
 const VALIDATION_PROMPT_PATH = resolve(REPO_ROOT, '.agents', 'taskflow', 'screenshot-validation.md');
 
-const ITERATIONS = Number(process.env.SELF_EVOLVE_ITERATIONS ?? '20');
+// The harness runs continuously by default — each restart resumes from where
+// the prior run left off (by scanning existing proof frames). Setting a
+// numeric SELF_EVOLVE_ITERATIONS caps the loop for short pilot runs; leaving
+// it unset (default) means "evolve forever until SIGINT".
+const ITERATIONS = process.env.SELF_EVOLVE_ITERATIONS
+  ? Number(process.env.SELF_EVOLVE_ITERATIONS)
+  : Number.POSITIVE_INFINITY;
 const MAX_FIX_ATTEMPTS = Number(process.env.SELF_EVOLVE_MAX_FIX ?? '3');
 const PUSH_EACH_ITER = process.env.SELF_EVOLVE_PUSH === '1';
 
@@ -125,11 +131,17 @@ async function main(): Promise<void> {
     console.error(`[self-evolve] resume: ${alreadyDone.size} iter(s) already have proof frames — skipping: ${[...alreadyDone.keys()].sort().join(', ')}`);
   }
 
+  // Resume: next iter picks up AFTER the highest existing frame index so we
+  // don't collide with a partial in-flight iter's dirty files.
+  const startIter = alreadyDone.size > 0
+    ? Math.max(...[...alreadyDone.keys()].map(Number)) + 1
+    : 0;
+
   await taskflow('self-evolve').run(async ({ phase, session }) => {
     const frameLog: string[] = [...alreadyDone.values()].sort();
     const failedIters: Array<{ iter: string; error: string }> = [];
 
-    for (let i = 0; i < ITERATIONS; i++) {
+    for (let i = startIter; i < ITERATIONS; i++) {
       const iter = String(i).padStart(2, '0');
 
       if (alreadyDone.has(iter)) continue;
@@ -192,7 +204,7 @@ async function main(): Promise<void> {
           const [lint, format, tests] = await Promise.all([
             session(`lint-${tag}`, {
               with: 'claude-code:sonnet',
-              task: 'Run `npx tsc --noEmit` from the repo root. If there are errors, DO NOT fix them here — just report status=error with a concise summary of the errors (first 5 lines). If clean, status=ok.',
+              task: `Run \`cd ${REPO_ROOT} && npx tsc --noEmit\`. If there are errors, DO NOT fix them here — just report status=error with a concise summary of the errors (first 5 lines). If clean, status=ok.`,
               dependsOn: [priorStep],
               schema: CmdResult,
               timeoutMs: 300_000,
@@ -206,7 +218,7 @@ async function main(): Promise<void> {
             }),
             session(`test-${tag}`, {
               with: 'claude-code:sonnet',
-              task: 'Run `npx vitest run` from the repo root. Return status=ok when exit 0 (all passed/skipped), status=error otherwise, with counts.passed / counts.failed populated from the vitest summary.',
+              task: `Run \`cd ${REPO_ROOT} && npx vitest run\`. Return status=ok when exit 0 (all passed/skipped), status=error otherwise, with counts.passed / counts.failed populated from the vitest summary.`,
               dependsOn: [priorStep],
               schema: CmdResult,
               timeoutMs: 600_000,
@@ -350,30 +362,32 @@ async function main(): Promise<void> {
     }
 
     if (failedIters.length > 0) {
-      console.error(`[self-evolve] ${failedIters.length}/${ITERATIONS} iterations failed:`);
+      console.error(`[self-evolve] ${failedIters.length} iteration(s) failed across this run:`);
       for (const f of failedIters) console.error(`  - iter-${f.iter}: ${f.error}`);
     }
 
-    await phase('stitch-video', async () => {
-      await session('make-video', {
-        with: 'claude-code:sonnet',
-        task: [
-          `All ${ITERATIONS} iterations completed, frame-validated, and committed. Stitch the captured frames into a single demo video.`,
-          '',
-          `Input frames (chronological):`,
-          ...frameLog.map((p, j) => `  ${j + 1}. ${p}`),
-          '',
-          `Output: ${VIDEO_PATH}`,
-          '',
-          'Use ffmpeg. 1 second per frame, loop the last frame for +2 seconds, 30fps output. Example:',
-          `  ffmpeg -y -framerate 1 -pattern_type glob -i '${FRAMES_DIR}/iter-*.png' -vf "format=yuv420p" -r 30 ${VIDEO_PATH}`,
-          '',
-          'Verify the output MP4 exists and is > 0 bytes.',
-        ].join('\n'),
-        write: [VIDEO_PATH],
-        timeoutMs: 300_000,
+    // Auto-stitch only when the loop ran to completion against a finite cap.
+    // In infinite mode (the default) the loop never exits — use the separate
+    // `npm run stitch` script when you want a snapshot demo video.
+    if (Number.isFinite(ITERATIONS) && frameLog.length > 0) {
+      await phase('stitch-video', async () => {
+        await session('make-video', {
+          with: 'claude-code:sonnet',
+          task: [
+            `Stitch ${frameLog.length} captured frames into a single demo video.`,
+            '',
+            `Output: ${VIDEO_PATH}`,
+            '',
+            'Use ffmpeg. 1 second per frame, loop the last frame for +2 seconds, 30fps output.',
+            `  ffmpeg -y -framerate 1 -pattern_type glob -i '${FRAMES_DIR}/iter-*.png' -vf "format=yuv420p" -r 30 ${VIDEO_PATH}`,
+            '',
+            'Verify the output MP4 exists and is > 0 bytes.',
+          ].join('\n'),
+          write: [VIDEO_PATH],
+          timeoutMs: 300_000,
+        });
       });
-    });
+    }
   }, { runsDir: resolve(REPO_ROOT, 'data', 'runs') });
 }
 
