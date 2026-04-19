@@ -1,0 +1,21 @@
+{
+  "$schema": "https://taskflow.sh/schema/registry-item.json",
+  "name": "example-hello",
+  "type": "taskflow:harness",
+  "description": "Minimal one-phase hello-world harness.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "requiredAdapters": [
+    "claude-code"
+  ],
+  "requiredEnv": [
+    "ANTHROPIC_API_KEY"
+  ],
+  "files": [
+    {
+      "path": "items/example-hello.ts",
+      "content": "import { taskflow } from 'taskflowjs';\n\nasync function main(): Promise<void> {\n  await taskflow('example-hello').run(async ({ phase, session }) => {\n    const greeting = await phase('greet', () =>\n      session('hello', {\n        with: 'claude-code:sonnet',\n        task: 'Say hello and return a short friendly greeting string.',\n        timeoutMs: 60_000,\n      }),\n    );\n    console.log(`[example-hello] ${String(greeting).trim()}`);\n  });\n}\n\nvoid main();\n",
+      "type": "taskflow:harness"
+    }
+  ]
+}

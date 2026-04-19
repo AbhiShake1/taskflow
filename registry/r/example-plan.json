@@ -1,0 +1,21 @@
+{
+  "$schema": "https://taskflow.sh/schema/registry-item.json",
+  "name": "example-plan",
+  "type": "taskflow:harness",
+  "description": "Two-phase plan harness demonstrating structured output and fan-out.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "requiredAdapters": [
+    "claude-code"
+  ],
+  "requiredEnv": [
+    "ANTHROPIC_API_KEY"
+  ],
+  "files": [
+    {
+      "path": "items/example-plan.ts",
+      "content": "import { z } from 'zod';\nimport { taskflow } from 'taskflowjs';\n\nconst Feature = z\n  .object({\n    name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),\n    files: z.array(z.string()).min(1),\n  })\n  .strict();\n\nconst FeatureList = z.object({ items: z.array(Feature).max(10) }).strict();\n\nconst CONFIG = {\n  projectRoot: process.cwd(),\n  model: 'claude-code:sonnet',\n  maxFeatures: 10,\n} as const;\n\nasync function main(): Promise<void> {\n  await taskflow('example-plan').run(async ({ phase, session }) => {\n    const features = await phase('discover', () =>\n      session('scan-features', {\n        with: CONFIG.model,\n        task: [\n          `Scan the codebase rooted at ${CONFIG.projectRoot}.`,\n          `Identify up to ${CONFIG.maxFeatures} user-facing features.`,\n          'For each feature return kebab-case name and a list of source files.',\n          'Prefer files under src/, app/, pages/, components/.',\n          'Return a FeatureList JSON object.',\n        ].join('\\n'),\n        schema: FeatureList,\n        timeoutMs: 300_000,\n      }),\n    );\n\n    await phase('summarize', () =>\n      Promise.all(\n        features.items.map((f) =>\n          session(`summary-${f.name}`, {\n            with: CONFIG.model,\n            task: `One-sentence summary of feature \"${f.name}\" based on these files: ${f.files.join(', ')}.`,\n            timeoutMs: 120_000,\n          }),\n        ),\n      ),\n    );\n\n    console.log(`[example-plan] planned ${features.items.length} feature(s)`);\n  });\n}\n\nvoid main();\n",
+      "type": "taskflow:harness"
+    }
+  ]
+}

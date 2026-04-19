@@ -1,0 +1,27 @@
+{
+  "$schema": "https://taskflow.sh/schema/registry.json",
+  "name": "@taskflow",
+  "homepage": "https://taskflow.sh",
+  "items": [
+    {
+      "name": "example-hello",
+      "type": "taskflow:harness",
+      "description": "Minimal one-phase hello-world harness.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "requiredAdapters": ["claude-code"],
+      "requiredEnv": ["ANTHROPIC_API_KEY"],
+      "files": [{ "path": "items/example-hello.ts", "type": "taskflow:harness" }]
+    },
+    {
+      "name": "example-plan",
+      "type": "taskflow:harness",
+      "description": "Two-phase plan harness demonstrating structured output and fan-out.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "requiredAdapters": ["claude-code"],
+      "requiredEnv": ["ANTHROPIC_API_KEY"],
+      "files": [{ "path": "items/example-plan.ts", "type": "taskflow:harness" }]
+    }
+  ]
+}
