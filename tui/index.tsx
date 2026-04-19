@@ -107,36 +107,16 @@ function App(props: AppInnerProps): React.ReactElement {
   return <TreeView state={state} tick={tick} />;
 }
 
-// Alt-screen buffer escape codes. Switching into the alt buffer gives the TUI
-// its own isolated screen — drilling into a leaf and back doesn't leave
-// scrollback noise in the user's terminal, and on exit the original terminal
-// contents are restored intact.
-const ALT_SCREEN_ENTER = '\x1B[?1049h';
-const ALT_SCREEN_EXIT = '\x1B[?1049l';
-
 export function mountTui(
   bus: EventBus,
   handlers?: Pick<AppProps, 'onSteer' | 'onAbortLeaf' | 'onQuit'>,
 ): () => void {
   const store = createTuiStore(bus);
-  const useAltScreen = Boolean(process.stdout.isTTY);
-  if (useAltScreen) process.stdout.write(ALT_SCREEN_ENTER);
-
-  let cleanedUp = false;
-  const cleanup = (): void => {
-    if (cleanedUp) return;
-    cleanedUp = true;
-    if (useAltScreen) process.stdout.write(ALT_SCREEN_EXIT);
-  };
-
-  // Ensure the alt buffer is exited even on hard signal exits — otherwise the
-  // user's terminal stays stuck on the empty alt buffer after Ctrl-C.
-  if (useAltScreen) {
-    process.once('exit', cleanup);
-    process.once('SIGINT', () => { cleanup(); process.exit(130); });
-    process.once('SIGTERM', () => { cleanup(); process.exit(143); });
-  }
-
+  // Rendering inline (not in the terminal's alt-screen buffer) so native
+  // mouse-wheel scrolling, selection, copy, etc. continue to work. The
+  // trade-off is that switching between TreeView and DetailView may leave
+  // short-lived scrollback, which is a reasonable price to keep the
+  // terminal feeling native.
   const { unmount } = render(
     <App
       bus={bus}
@@ -146,10 +126,7 @@ export function mountTui(
       onQuit={handlers?.onQuit}
     />,
   );
-  return () => {
-    unmount();
-    cleanup();
-  };
+  return () => unmount();
 }
 
 export function streamHeadless(bus: EventBus): () => void {

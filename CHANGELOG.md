@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-04-19
+
+### Changed
+- TUI: removed alt-screen buffer mode. Native mouse-wheel scroll, terminal selection, and copy/paste now work as expected. The trade-off is that switching between TreeView and DetailView may leave brief scrollback — preferred over breaking native terminal interactions.
+- TUI TreeView: strips trailing `-NN` and `-NN-aM` counter suffixes from the displayed label. `pick-05` reads as `pick`, `lint-05-a0` as `lint`, `iter-05` as `iter`. Internal ids stay unique for the engine; only the rendered label is cleaned up.
+
 ## [0.1.9] - 2026-04-19
 
 ### Changed

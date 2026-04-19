@@ -14,11 +14,19 @@ export type TreeViewProps = {
   tick?: number;
 };
 
+// Strip trailing counter suffixes so the tree reads as a stream of actions
+// rather than a wall of noise. `pick-05` → `pick`, `lint-05-a0` → `lint`,
+// `iter-05` → `iter`. Ids without a numeric tail are returned unchanged.
+function stripCounter(id: string): string {
+  return id.replace(/-\d{2,}(-[a-z]\d+)?$/, '');
+}
+
 function nodeLabel(node: TreeNode): string {
+  const display = stripCounter(node.id);
   if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
-    return `${node.id} (${node.childProgress.done}/${node.childProgress.total})`;
+    return `${display} (${node.childProgress.done}/${node.childProgress.total})`;
   }
-  return node.id;
+  return display;
 }
 
 function nodeTail(node: TreeNode): string {
