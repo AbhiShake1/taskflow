@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import type { RunEvent } from '../core/types';
 import { EventBus } from '../core/events';
-import { createTuiStore } from '../tui/store';
+import { createTuiStore, formatElapsed, statusGlyph, statusColor, liveStatusGlyph, latestActivity, type TreeNode } from '../tui/store';
 import { TreeView } from '../tui/TreeView';
 import { DetailView } from '../tui/DetailView';
 import { __App as App, streamHeadless } from '../tui/index';
@@ -282,5 +282,168 @@ describe('streamHeadless', () => {
     expect(logs).toHaveLength(2);
     expect(JSON.parse(logs[0])).toEqual(ev);
     expect(JSON.parse(logs[1]).leafId).toBe('a');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Display helper unit tests
+// ---------------------------------------------------------------------------
+
+function makeNode(leafEvents: RunEvent[]): TreeNode {
+  return { id: 'n', kind: 'leaf', status: 'running', children: [], leafEvents };
+}
+
+describe('formatElapsed', () => {
+  it('returns em-dash when startedAt is absent or zero (falsy guard)', () => {
+    expect(formatElapsed()).toBe('—');
+    expect(formatElapsed(undefined, 1000, 2000)).toBe('—');
+    // The implementation uses !startedAt, so 0 is treated as absent.
+    expect(formatElapsed(0, 1000, 0)).toBe('—');
+  });
+
+  it('returns seconds when elapsed < 60s', () => {
+    expect(formatElapsed(1000, 31_000, 0)).toBe('30s');
+    expect(formatElapsed(1000, 1000, 0)).toBe('0s');
+    expect(formatElapsed(1000, 60_999, 0)).toBe('59s');
+  });
+
+  it('returns minutes+seconds when 60s <= elapsed < 1h', () => {
+    expect(formatElapsed(1000, 91_000, 0)).toBe('1m 30s');
+    expect(formatElapsed(1000, 3_600_999, 0)).toBe('59m 59s');
+    expect(formatElapsed(1000, 61_000, 0)).toBe('1m 0s');
+  });
+
+  it('returns hours+minutes (no seconds) when elapsed >= 1h', () => {
+    expect(formatElapsed(1000, 3_601_000, 0)).toBe('1h 0m');
+    expect(formatElapsed(1000, 3_661_000, 0)).toBe('1h 1m');
+    expect(formatElapsed(1000, 7_321_000, 0)).toBe('2h 2m');
+  });
+
+  it('uses now as end when endedAt is absent', () => {
+    expect(formatElapsed(1000, undefined, 6000)).toBe('5s');
+  });
+});
+
+describe('statusGlyph', () => {
+  it('returns the correct glyph for each status', () => {
+    expect(statusGlyph('pending')).toBe('○');
+    expect(statusGlyph('running')).toBe('◐');
+    expect(statusGlyph('done')).toBe('✓');
+    expect(statusGlyph('error')).toBe('✗');
+    expect(statusGlyph('aborted')).toBe('⚠');
+    expect(statusGlyph('timeout')).toBe('⚠');
+    expect(statusGlyph('plan')).toBe('◯');
+  });
+
+  it('returns dot for unknown status (default branch)', () => {
+    expect(statusGlyph('unknown' as TreeNode['status'])).toBe('·');
+  });
+});
+
+describe('statusColor', () => {
+  it('returns the correct color for colored statuses', () => {
+    expect(statusColor('running')).toBe('cyan');
+    expect(statusColor('done')).toBe('green');
+    expect(statusColor('error')).toBe('red');
+    expect(statusColor('aborted')).toBe('yellow');
+    expect(statusColor('timeout')).toBe('yellow');
+    expect(statusColor('plan')).toBe('cyan');
+  });
+
+  it('returns undefined for pending', () => {
+    expect(statusColor('pending')).toBeUndefined();
+  });
+
+  it('returns undefined for unknown status (default branch)', () => {
+    expect(statusColor('unknown' as TreeNode['status'])).toBeUndefined();
+  });
+});
+
+describe('liveStatusGlyph', () => {
+  it('returns a spinner frame for running status, derived from now', () => {
+    // SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
+    expect(liveStatusGlyph('running', 0)).toBe('⠋');    // frame 0
+    expect(liveStatusGlyph('running', 100)).toBe('⠙');  // frame 1
+    expect(liveStatusGlyph('running', 950)).toBe('⠏');  // frame 9
+    expect(liveStatusGlyph('running', 1000)).toBe('⠋'); // frame 10 % 10 = 0
+  });
+
+  it('returns the static glyph for non-running statuses', () => {
+    expect(liveStatusGlyph('done', 0)).toBe('✓');
+    expect(liveStatusGlyph('error', 0)).toBe('✗');
+    expect(liveStatusGlyph('pending', 0)).toBe('○');
+    expect(liveStatusGlyph('aborted', 0)).toBe('⚠');
+  });
+});
+
+describe('latestActivity', () => {
+  it('returns undefined when there are no events', () => {
+    expect(latestActivity(makeNode([]))).toBeUndefined();
+  });
+
+  it('handles tool event without command arg', () => {
+    const ev = { t: 'tool', leafId: 'n', name: 'Read', args: { path: '/a' }, ts: 1 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('▸ Read');
+  });
+
+  it('handles tool event with command arg (first line, 50-char cap)', () => {
+    const ev = { t: 'tool', leafId: 'n', name: 'Bash', args: { command: 'echo hi\necho bye' }, ts: 1 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('▸ Bash: echo hi');
+
+    const long = 'x'.repeat(60);
+    const ev2 = { t: 'tool', leafId: 'n', name: 'Bash', args: { command: long }, ts: 2 } as RunEvent;
+    expect(latestActivity(makeNode([ev2]))).toBe(`▸ Bash: ${'x'.repeat(50)}`);
+  });
+
+  it('handles tool-res event', () => {
+    const ev = { t: 'tool-res', leafId: 'n', name: 'Read', ts: 2 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('▹ Read done');
+  });
+
+  it('handles assistant message event (first non-empty line, 60-char cap)', () => {
+    const ev = { t: 'message', leafId: 'n', role: 'assistant', content: 'hello world', ts: 3 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('▹ hello world');
+
+    const multiline = { t: 'message', leafId: 'n', role: 'assistant', content: '\nfirst line\nsecond', ts: 4 } as RunEvent;
+    expect(latestActivity(makeNode([multiline]))).toBe('▹ first line');
+
+    const longContent = 'a'.repeat(70);
+    const ev2 = { t: 'message', leafId: 'n', role: 'assistant', content: longContent, ts: 5 } as RunEvent;
+    expect(latestActivity(makeNode([ev2]))).toBe(`▹ ${'a'.repeat(60)}`);
+  });
+
+  it('skips user messages and empty assistant messages', () => {
+    const user = { t: 'message', leafId: 'n', role: 'user', content: 'hi', ts: 1 } as RunEvent;
+    expect(latestActivity(makeNode([user]))).toBeUndefined();
+
+    const empty = { t: 'message', leafId: 'n', role: 'assistant', content: '', ts: 1 } as RunEvent;
+    expect(latestActivity(makeNode([empty]))).toBeUndefined();
+  });
+
+  it('handles edit event', () => {
+    const ev = { t: 'edit', leafId: 'n', file: 'src/a.ts', added: 5, removed: 2, ts: 4 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('✎ src/a.ts (+5/-2)');
+  });
+
+  it('handles error event (60-char cap)', () => {
+    const ev = { t: 'error', leafId: 'n', error: 'something broke', ts: 5 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('✗ something broke');
+
+    const long = { t: 'error', leafId: 'n', error: 'e'.repeat(80), ts: 6 } as RunEvent;
+    expect(latestActivity(makeNode([long]))).toBe(`✗ ${'e'.repeat(60)}`);
+  });
+
+  it('handles steer event (60-char cap)', () => {
+    const ev = { t: 'steer', leafId: 'n', content: 'try again', ts: 6 } as RunEvent;
+    expect(latestActivity(makeNode([ev]))).toBe('↻ steer: try again');
+  });
+
+  it('returns the most recent meaningful event when multiple events are present', () => {
+    const evs = [
+      { t: 'tool', leafId: 'n', name: 'Read', args: {}, ts: 1 },
+      { t: 'tool-res', leafId: 'n', name: 'Read', ts: 2 },
+      { t: 'edit', leafId: 'n', file: 'b.ts', added: 1, removed: 0, ts: 3 },
+    ] as RunEvent[];
+    expect(latestActivity(makeNode(evs))).toBe('✎ b.ts (+1/-0)');
   });
 });
