@@ -105,9 +105,11 @@ describe('DetailView snapshot', () => {
       <DetailView state={store.getState()} leafId="x" />,
     );
     const frame = lastFrame() ?? '';
-    expect(frame).toContain('Message:');
-    expect(frame).toContain('Tool:');
-    expect(frame).toContain('Edit');
+    // Claude-Code-style DetailView: per-event rendering without the "Message:"
+    // / "Tool:" prefix labels — just the content, bullet-marked. Assert the
+    // meaningful content (message body, tool name, file) is present.
+    expect(frame).toContain('hello world');
+    expect(frame).toContain('fetch');
     expect(frame).toContain('a.ts');
     expect(frame).toContain('opencode');
     expect(frame).toContain('groq/llama');

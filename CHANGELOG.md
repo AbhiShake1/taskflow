@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-04-19
+
+### Changed
+- TUI DetailView: claude-code-style per-event rendering. Tool calls show as `● ToolName(arg-summary)` with per-tool argument formatting (Bash → command, Read/Write/Edit → basename, Grep → pattern + path, Glob → pattern) instead of raw JSON. Tool results nest under the call with `⎿` and collapse to first 3 lines + `… +N lines` footer. Messages, edits, steers, errors, and the terminal done-marker get distinct bullet glyphs (`●`, `✎`, `↻`, `✗`, `✓/✗/⚠`). Older events fall off the top when a leaf accumulates more than 80 blocks.
+
 ## [0.1.7] - 2026-04-19
 
 ### Changed
