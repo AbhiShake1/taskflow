@@ -175,7 +175,7 @@ const claudeCodeAdapter: AgentAdapter = {
       else ctx.signal.addEventListener('abort', () => abortController.abort(), { once: true });
     }
 
-    let queryObj: any = null;
+    let queryObj: AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void>; close?: () => void } | null = null;
     let aborted = false;
     // Per-turn input stream. Replaced on each resumed turn so `steer()` lands
     // on the live SDK input rather than a closed prior stream.
@@ -207,8 +207,9 @@ const claudeCodeAdapter: AgentAdapter = {
     let lastAssistantText: string | undefined;
     // Resolves once queryObj is constructed (so `abort()` can wait for it to exist before
     // calling interrupt()). Re-created on each turn — abort() always reads the latest one.
-    let resolveReady!: (q: any) => void;
-    let ready: Promise<any> = new Promise<any>(r => { resolveReady = r; });
+    type SdkQuery = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void>; close?: () => void };
+    let resolveReady!: (q: SdkQuery | null) => void;
+    let ready: Promise<SdkQuery | null> = new Promise<SdkQuery | null>(r => { resolveReady = r; });
 
     /**
      * Pump one turn of the SDK conversation. Used for the initial spawn AND
@@ -300,14 +301,14 @@ const claudeCodeAdapter: AgentAdapter = {
         });
         resolveReady(queryObj);
 
-        for await (const msg of queryObj as AsyncIterable<any>) {
+        for await (const msg of queryObj!) {
           if (aborted) break;
           await normalizeMessage(msg, spec.id, ch);
           // Track the last assistant text we see, both for finalAssistantText
           // backfill and for the JSON-block fallback path (if the model ignored
           // our submit_result tool and just emitted prose + a JSON block).
-          if (msg && typeof msg === 'object' && (msg as any).type === 'assistant') {
-            const txt = stringifyAssistantContent((msg as any).message?.content);
+          if (msg && typeof msg === 'object' && msg.type === 'assistant') {
+            const txt = stringifyAssistantContent(msg.message?.content);
             if (txt.length > 0) lastAssistantText = txt;
           }
           // End-of-turn: the SDK emits exactly one `SDKResultMessage` (discriminator
@@ -315,7 +316,7 @@ const claudeCodeAdapter: AgentAdapter = {
           // Until we close the input iterable, `query()` keeps awaiting further
           // streaming-input user messages and the underlying CLI subprocess never
           // exits — which hangs the leaf.
-          if (msg && typeof msg === 'object' && (msg as any).type === 'result') {
+          if (msg && typeof msg === 'object' && msg.type === 'result') {
             const u = extractUsage((msg as any).usage);
             if (u) lastUsage = u;
             const sid = (msg as any).session_id;
@@ -466,7 +467,7 @@ const claudeCodeAdapter: AgentAdapter = {
         ch = new EventChannel<AgentEvent>();
         done = new Promise<LeafResult>(r => { resolveResult = r; });
         settled = false;
-        ready = new Promise<any>(r => { resolveReady = r; });
+        ready = new Promise<SdkQuery | null>(r => { resolveReady = r; });
         input = new InputStream();
         // Seed the new input with the steer text as the only user message.
         // The SDK loads prior history from disk via `resume`, so we don't need
