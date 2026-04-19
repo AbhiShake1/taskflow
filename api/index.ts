@@ -117,6 +117,14 @@ export interface PhaseCtx {
   setTitle: (title: string) => void;
 }
 
+export interface PhaseOpts {
+  /**
+   * Display title known at phase-creation time. Rendered in the TUI instead
+   * of the stripped id. Runtime `setTitle(...)` from the body overrides this.
+   */
+  title?: string;
+}
+
 export interface RunCtx {
   /**
    * Wraps `engineStage()` around the provided async body. The body's return
@@ -125,6 +133,10 @@ export interface RunCtx {
    * use to call `setTitle(...)` after some setup work.
    */
   phase<T>(name: string, body: (ctx: PhaseCtx) => Promise<T>): Promise<T>;
+  /**
+   * Overload: static title passed at phase-creation time.
+   */
+  phase<T>(name: string, opts: PhaseOpts, body: (ctx: PhaseCtx) => Promise<T>): Promise<T>;
 
   /**
    * Invoke one agent session. Returns a promise that resolves to the LLM's
@@ -271,9 +283,15 @@ export function taskflow(name: string): TaskflowBuilder {
 
       return engineHarness(name, harnessOpts, async (h) => {
         const ctx: RunCtx = {
-          async phase<T>(phaseName: string, phaseBody: (ctx: PhaseCtx) => Promise<T>): Promise<T> {
+          async phase<T>(
+            phaseName: string,
+            optsOrBody: PhaseOpts | ((ctx: PhaseCtx) => Promise<T>),
+            maybeBody?: (ctx: PhaseCtx) => Promise<T>,
+          ): Promise<T> {
+            const phaseBody = typeof optsOrBody === 'function' ? optsOrBody : maybeBody!;
+            const opts: PhaseOpts = typeof optsOrBody === 'function' ? {} : optsOrBody;
             let result!: T;
-            await engineStage(h, phaseName, async (stageCtx) => {
+            await engineStage(h, phaseName, opts, async (stageCtx) => {
               result = await phaseBody({ setTitle: stageCtx.setTitle });
             });
             return result;

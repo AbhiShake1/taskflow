@@ -108,6 +108,7 @@ export function createTuiStore(
             startedAt: ev.ts,
             children: [],
             leafEvents: [],
+            ...(ev.title !== undefined ? { title: ev.title } : {}),
           };
           nodes[ev.stageId] = node;
           if (parentId && nodes[parentId]) {

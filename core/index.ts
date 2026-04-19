@@ -227,7 +227,24 @@ export interface StageCtx {
   setTitle: (title: string) => void;
 }
 
-export async function stage(h: Ctx, id: string, body: (ctx: StageCtx) => Promise<void> | (() => Promise<void>)): Promise<void> {
+export interface StageOpts {
+  /**
+   * Display title for the TUI, known at phase-creation time. When provided,
+   * rendered in place of the stripped id. Runtime-set `setTitle(...)` calls
+   * from the body override this if both are used.
+   */
+  title?: string;
+}
+
+export async function stage(
+  h: Ctx,
+  id: string,
+  optsOrBody: StageOpts | ((ctx: StageCtx) => Promise<void>),
+  maybeBody?: (ctx: StageCtx) => Promise<void>,
+): Promise<void> {
+  const body = typeof optsOrBody === 'function' ? optsOrBody : maybeBody!;
+  const opts: StageOpts = typeof optsOrBody === 'function' ? {} : optsOrBody;
+
   const parentId = h.stageStack[h.stageStack.length - 1];
   h.stageStack.push(id);
   h._stageOrder.push(id);
@@ -239,7 +256,14 @@ export async function stage(h: Ctx, id: string, body: (ctx: StageCtx) => Promise
   if (fireBefore) {
     await hooks!.fire('beforePhase', buildHookCtx(h, { hookName: 'beforePhase', phaseScope: { id, stack: h.stageStack.slice() } }), { phaseId: id, parentId });
   }
-  h.bus.publish({ t: 'stage-enter', stageId: id, parentId, ts: Date.now() });
+  const enterEvent: { t: 'stage-enter'; stageId: string; parentId?: string; title?: string; ts: number } = {
+    t: 'stage-enter',
+    stageId: id,
+    parentId,
+    ts: Date.now(),
+  };
+  if (opts.title !== undefined) enterEvent.title = opts.title;
+  h.bus.publish(enterEvent);
 
   const stageCtx: StageCtx = {
     setTitle: (title: string) => {

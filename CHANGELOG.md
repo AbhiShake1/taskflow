@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-04-19
+
+### Added
+- `phase(name, { title }, body)` overload — static title at phase-creation time. Use when you know the title upfront; cleaner than the runtime `setTitle` path. Runtime `ctx.setTitle(...)` still works and overrides the static title. `stage-enter` event now carries an optional `title` field so the TUI sees the title on its first render.
+
 ## [0.1.12] - 2026-04-19
 
 ### Added
