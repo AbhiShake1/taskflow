@@ -45,17 +45,19 @@ describe('assertNoOverlaps', () => {
     ).not.toThrow();
   });
 
-  it('throws with both conflicting leaf ids in the message', () => {
+  it('throws with both conflicting leaf ids and glob strings in the message', () => {
     try {
       assertNoOverlaps([
-        { id: 'x', claims: ['a/**'] },
-        { id: 'y', claims: ['a/b'] },
+        { id: 'shard-0', claims: ['data/shared/**'] },
+        { id: 'shard-1', claims: ['data/shared/out.json'] },
       ]);
       throw new Error('expected assertNoOverlaps to throw');
     } catch (err) {
       const msg = (err as Error).message;
-      expect(msg).toContain('x');
-      expect(msg).toContain('y');
+      expect(msg).toContain('shard-0');
+      expect(msg).toContain('shard-1');
+      expect(msg).toContain('data/shared/**');
+      expect(msg).toContain('data/shared/out.json');
     }
   });
 });

@@ -11,11 +11,23 @@ export function claimsOverlap(a: string[] = [], b: string[] = []): boolean {
   return false;
 }
 
+function firstOverlappingPair(a: string[] = [], b: string[] = []): [string, string] | null {
+  for (const ga of a) for (const gb of b) {
+    const pa = literalPrefix(ga), pb = literalPrefix(gb);
+    if (pa.startsWith(pb) || pb.startsWith(pa)) return [ga, gb];
+  }
+  return null;
+}
+
 export function assertNoOverlaps(leaves: Array<{ id: string; claims?: string[] }>): void {
   for (let i = 0; i < leaves.length; i++)
-    for (let j = i + 1; j < leaves.length; j++)
-      if (claimsOverlap(leaves[i].claims, leaves[j].claims))
-        throw new Error(`claim conflict: "${leaves[i].id}" vs "${leaves[j].id}"`);
+    for (let j = i + 1; j < leaves.length; j++) {
+      const pair = firstOverlappingPair(leaves[i].claims, leaves[j].claims);
+      if (pair)
+        throw new Error(
+          `claim conflict: "${leaves[i].id}" vs "${leaves[j].id}" — write glob "${pair[0]}" overlaps "${pair[1]}"`,
+        );
+    }
 }
 
 export { literalPrefix };
