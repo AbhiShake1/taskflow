@@ -217,6 +217,48 @@ describe('pi adapter', () => {
     await handle.wait();
   });
 
+  it('message_update with content replaces buffer instead of accumulating', async () => {
+    const child = installSpawn(makeFakeChild);
+    const handle = piAdapter.spawn(spec, ctx);
+    const collected: AgentEvent[] = [];
+    const consumer = (async () => { for await (const e of handle.events) collected.push(e); })();
+
+    child.stdout.write(JSON.stringify({ type: 'message_update', role: 'assistant', turn_id: 2, delta: 'stale' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'message_update', role: 'assistant', turn_id: 2, content: 'fresh' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'turn_end', turn_id: 2, role: 'assistant' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\n');
+    child.stdout.end();
+    await nextTick(4);
+    child.emit('exit', 0, null);
+    await consumer;
+
+    const msg = collected.find((e) => e.t === 'message') as Extract<AgentEvent, { t: 'message' }> | undefined;
+    expect(msg).toBeDefined();
+    expect(msg!.content).toBe('fresh');
+  });
+
+  it('turn_end for non-assistant role clears buffer without emitting a message', async () => {
+    const child = installSpawn(makeFakeChild);
+    const handle = piAdapter.spawn(spec, ctx);
+    const collected: AgentEvent[] = [];
+    const consumer = (async () => { for await (const e of handle.events) collected.push(e); })();
+
+    child.stdout.write(JSON.stringify({ type: 'message_update', role: 'user', turn_id: 3, delta: 'user text' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'turn_end', turn_id: 3, role: 'user' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'message_update', role: 'assistant', turn_id: 4, delta: 'reply' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'turn_end', turn_id: 4, role: 'assistant' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\n');
+    child.stdout.end();
+    await nextTick(4);
+    child.emit('exit', 0, null);
+    await consumer;
+
+    const messages = collected.filter((e) => e.t === 'message') as Array<Extract<AgentEvent, { t: 'message' }>>;
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe('assistant');
+    expect(messages[0].content).toBe('reply');
+  });
+
   it('non-zero exit → done with status error', async () => {
     const child = installSpawn(makeFakeChild);
     const handle = piAdapter.spawn(spec, ctx);
