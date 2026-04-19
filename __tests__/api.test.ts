@@ -39,6 +39,10 @@ describe('parseWith', () => {
     });
   });
 
+  it('treats trailing colon as no model', () => {
+    expect(parseWith('claude-code:')).toEqual({ agent: 'claude-code', model: undefined });
+  });
+
   it('throws a clear error for unknown agents', () => {
     expect(() => parseWith('gpt-4')).toThrowError(/unknown agent/);
     expect(() => parseWith('gpt-4:something')).toThrowError(/claude-code\|pi\|codex\|cursor\|opencode/);
