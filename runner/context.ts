@@ -44,12 +44,21 @@ export type RunnerContext = {
   plugins?: Plugin[];
 };
 
-let current: RunnerContext | undefined;
+// Stash the runner context on globalThis instead of a module-scoped var.
+// Under the published CLI, jiti loads the runner module while the harness
+// loads core via native import — two distinct module instances of this
+// file. A module-scoped `current` would split the state across both, so
+// setRunner() in one instance wouldn't be visible to getRunner() in the
+// other (harness() would fall back to defaultRunId() and create a second
+// stray run dir). globalThis is the single source of truth regardless of
+// how many times the module gets evaluated.
+const KEY = Symbol.for('taskflow.runnerContext');
+type GlobalWithRunner = typeof globalThis & { [KEY]?: RunnerContext | undefined };
 
 export function setRunner(ctx: RunnerContext | undefined): void {
-  current = ctx;
+  (globalThis as GlobalWithRunner)[KEY] = ctx;
 }
 
 export function getRunner(): RunnerContext | undefined {
-  return current;
+  return (globalThis as GlobalWithRunner)[KEY];
 }

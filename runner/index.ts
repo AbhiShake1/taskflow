@@ -123,11 +123,28 @@ async function main(): Promise<void> {
   process.on('SIGTERM', abortAll);
 
   try {
-    // Load the harness module via jiti so .ts files Just Work without tsx
-    // being installed (matters for the published CLI, where users invoke
-    // `taskflow run harness.ts` and we don't want a tsx peer dep).
-    const jiti = createJiti(import.meta.url, { interopDefault: true });
-    await jiti.import(resolve(harnessPath));
+    // Load the harness module. When running under tsx (the dev path —
+    // `tsx runner/index.ts harness.ts`), tsx has already registered an ESM
+    // loader, so plain dynamic import handles the .ts file with a single
+    // evaluation. Going through jiti.import on top of tsx caused jiti to
+    // re-evaluate the module, calling top-level harness() twice and
+    // creating two run dirs.
+    //
+    // Under plain node (the published CLI path), Node 22.6+ supports
+    // --experimental-strip-types so .ts works there too. If that's not
+    // present, jiti is the fallback.
+    const harnessAbs = resolve(harnessPath);
+    try {
+      await import(harnessAbs);
+    } catch (importErr) {
+      const msg = importErr instanceof Error ? importErr.message : String(importErr);
+      if (/Unknown file extension|Cannot use import/.test(msg)) {
+        const jiti = createJiti(import.meta.url, { interopDefault: false });
+        await jiti.import(harnessAbs);
+      } else {
+        throw importErr;
+      }
+    }
   } catch (err) {
     console.error('harness error:', err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
