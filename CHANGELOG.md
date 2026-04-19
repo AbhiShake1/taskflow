@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-04-19
+
+### Changed
+- TUI TreeView: tree-line connectors (`├─`, `└─`) now render for root-level nodes too. Previously they were suppressed for any node with no parentId, which made multiple top-level siblings appear as a column-aligned plain list. Single-root harnesses still look clean; multi-root or flat-session layouts get the visual structure back.
+
 ## [0.1.10] - 2026-04-19
 
 ### Changed

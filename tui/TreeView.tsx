@@ -73,10 +73,8 @@ function treePrefix(
   for (const anc of chain) {
     prefix += isLastSibling(anc, nodes, rootIds) ? '   ' : '│  ';
   }
-  // Root-level nodes have no parent — don't add a terminal connector, just
-  // show the node inline. Adds visual air and matches the common case of a
-  // single harness-root under which all the real tree lives.
-  if (!node.parentId) return '';
+  // Connector at the node's own level — applies to every node, including
+  // roots. Without this, sibling top-level nodes lose their visual grouping.
   prefix += isLastSibling(node, nodes, rootIds) ? '└─ ' : '├─ ';
   return prefix;
 }
