@@ -1,6 +1,6 @@
 {
-  "name": "taskflowjs",
-  "version": "0.1.16",
+  "name": "taskflow-cli",
+  "version": "0.1.17",
   "description": "Multi-agent orchestration harness for AI coding agents (claude-code, codex, cursor, opencode, pi). Async-await TypeScript API; lifecycle hooks; auto-todos with verify-loop.",
   "keywords": [
     "ai",

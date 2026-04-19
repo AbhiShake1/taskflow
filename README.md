@@ -1,23 +1,23 @@
-# taskflowjs
+# taskflow-cli
 
-[![npm version](https://img.shields.io/npm/v/taskflowjs.svg)](https://www.npmjs.com/package/taskflowjs)
+[![npm version](https://img.shields.io/npm/v/taskflow-cli.svg)](https://www.npmjs.com/package/taskflow-cli)
 [![CI](https://github.com/AbhiShake1/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/AbhiShake1/taskflow/actions/workflows/ci.yml)
 [![Release](https://github.com/AbhiShake1/taskflow/actions/workflows/release.yml/badge.svg)](https://github.com/AbhiShake1/taskflow/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node](https://img.shields.io/node/v/taskflowjs.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/node/v/taskflow-cli.svg)](https://nodejs.org/)
 
 Multi-agent orchestration harness for AI coding agents (claude-code, codex, cursor, opencode, pi). Async-await TypeScript API; lifecycle hooks; auto-todos with verify-loop.
 
 ## Install
 
 ```sh
-npm install taskflowjs
+npm install taskflow-cli
 ```
 
 ## Quick start
 
 ```ts
-import { taskflow } from 'taskflowjs';
+import { taskflow } from 'taskflow-cli';
 
 await taskflow('hello').run(async ({ phase, session }) => {
   await phase('greet', async () => {
@@ -29,7 +29,7 @@ await taskflow('hello').run(async ({ phase, session }) => {
 ## Hooks via `.agents/taskflow/config.ts`
 
 ```ts
-import { defineConfig } from 'taskflowjs/config';
+import { defineConfig } from 'taskflow-cli/config';
 
 export default defineConfig({
   events: {
@@ -61,7 +61,7 @@ const result = await session('summary', {
 A plugin contributes hooks, a `ctx.plugins.<name>` namespace, and optional config fragments:
 
 ```ts
-import type { Plugin } from 'taskflowjs/core';
+import type { Plugin } from 'taskflow-cli/core';
 
 export const myPlugin: Plugin = () => ({
   name: 'my-plugin',
@@ -75,7 +75,7 @@ export const myPlugin: Plugin = () => ({
 To get typed access to `ctx.plugins.myPlugin.hello()` in downstream hooks, module-augment the plugin namespace registry:
 
 ```ts
-declare module 'taskflowjs/core' {
+declare module 'taskflow-cli/core' {
   interface PluginNamespaces {
     'my-plugin': { hello: () => string };
   }
