@@ -4,11 +4,13 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
-// TODO(taskflow): upgrade to codex-native structured output once `codex exec`
-// gains a first-class --response-format / --schema flag. For now we rely on
-// prompt-engineered fallback — see adapters/structured-output.ts.
+// codex-native structured output via --output-schema is wired for non-codex models
+// (gpt-5 / gpt-5.4). Codex-variant models still fall back to prompt-engineered JSON
+// until openai/codex#4181 is fixed. Override via HARNESS_CODEX_SCHEMA=0|1.
 import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
@@ -81,20 +83,46 @@ const codexAdapter: AgentAdapter = {
     const startedAt = Date.now();
     const leafId = spec.id;
 
+    // Native --output-schema decision. Auto path requires a known model AND a
+    // model not on the gpt-5-codex* broken-list (openai/codex#4181). Env var
+    // forces on/off regardless. Without ctx.structuredOutput it's never native.
+    const schemaEnv = process.env.HARNESS_CODEX_SCHEMA;
+    const modelBroken = typeof spec.model === 'string' && spec.model.startsWith('gpt-5-codex');
+    const useNativeSchema =
+      ctx.structuredOutput !== undefined &&
+      (schemaEnv === '1' || (schemaEnv !== '0' && !modelBroken && spec.model !== undefined));
+
     // 1) Synchronous pre-spawn event — visible even if codex binary is missing.
     ch.push({ t: 'spawn', leafId, agent: 'codex', model: spec.model, ts: Date.now() });
 
     // Resolve prompt with optional rules prefix.
     const basePrompt =
       spec.rulesPrefix !== false && ctx.rulesPrefix ? ctx.rulesPrefix + spec.task : spec.task;
-    // Prompt-engineering fallback for structured output: append schema guidance.
-    const prompt = ctx.structuredOutput
-      ? basePrompt + '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
-      : basePrompt;
+    // Prompt-engineering fallback for structured output: append schema guidance
+    // only when the native --output-schema path is NOT in play.
+    const prompt =
+      ctx.structuredOutput && !useNativeSchema
+        ? basePrompt + '\n' + jsonFallbackPromptSuffix(ctx.structuredOutput.jsonSchema)
+        : basePrompt;
 
-    // codex CLI: `codex exec --json --model <id> -p "<task>"`.
+    // Native-mode side-files: write the schema to disk and pre-allocate the
+    // outpath; codex writes JSON-only result to outPath on success.
+    let nativeOutPath: string | undefined;
+    if (useNativeSchema && ctx.structuredOutput) {
+      const leafDir = path.join(ctx.runDir, 'leaves', leafId);
+      const schemaPath = path.join(leafDir, 'codex-schema.json');
+      nativeOutPath = path.join(leafDir, 'codex-result.json');
+      fs.mkdirSync(leafDir, { recursive: true });
+      fs.writeFileSync(schemaPath, JSON.stringify(ctx.structuredOutput.jsonSchema));
+    }
+
+    // codex CLI: `codex exec --json [--output-schema <path> -o <path>] --model <id> -p "<task>"`.
     // The `-p` flag passes the prompt via argv; stdin is reserved for steering (plain text).
     const args = ['exec', '--json'];
+    if (useNativeSchema && nativeOutPath) {
+      const schemaPath = path.join(ctx.runDir, 'leaves', leafId, 'codex-schema.json');
+      args.push('--output-schema', schemaPath, '-o', nativeOutPath);
+    }
     if (spec.model) args.push('--model', spec.model);
     args.push('-p', prompt);
 
@@ -132,7 +160,26 @@ const codexAdapter: AgentAdapter = {
       let result: LeafResult = base;
       if (lastAssistantText !== undefined) {
         result = { ...result, finalAssistantText: lastAssistantText };
-        if (ctx.structuredOutput && status === 'done') {
+      }
+      if (ctx.structuredOutput && status === 'done') {
+        if (useNativeSchema && nativeOutPath) {
+          // Native path: codex writes the JSON result to nativeOutPath. Read +
+          // parse; on any failure (ENOENT, malformed JSON) demote to error.
+          try {
+            const raw = fs.readFileSync(nativeOutPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            result = { ...result, structuredOutputValue: parsed };
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            result = {
+              ...result,
+              status: 'error',
+              exitCode: 1,
+              error: `codex: native schema result missing or malformed: ${detail}`,
+            };
+          }
+        } else if (lastAssistantText !== undefined) {
+          // Fallback path: scrape the final assistant message for a fenced JSON block.
           const parsed = jsonBlockFromText(lastAssistantText);
           if (parsed !== null) {
             result = { ...result, structuredOutputValue: parsed };
@@ -146,6 +193,14 @@ const codexAdapter: AgentAdapter = {
               error: 'codex: structured output requested but no JSON block found in final assistant message',
             };
           }
+        } else {
+          // Fallback path with no assistant text at all → demote to error.
+          result = {
+            ...result,
+            status: 'error',
+            exitCode: 1,
+            error: 'codex: structured output requested but no JSON block found in final assistant message',
+          };
         }
       }
       ch.push({ t: 'done', leafId, result, ts: Date.now() });
@@ -181,8 +236,10 @@ const codexAdapter: AgentAdapter = {
         let msg: CodexMsg;
         try {
           msg = JSON.parse(line) as CodexMsg;
-        } catch {
-          ch.push({ t: 'error', leafId, error: `malformed json: ${line}`, ts: Date.now() });
+        } catch (parseErr) {
+          const snippet = line.length > 200 ? line.slice(0, 200) + '…' : line;
+          const detail = parseErr instanceof SyntaxError ? `: ${parseErr.message}` : '';
+          ch.push({ t: 'error', leafId, error: `malformed json${detail}: ${snippet}`, ts: Date.now() });
           return;
         }
         handleCodexMsg(msg);
