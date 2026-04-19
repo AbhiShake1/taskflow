@@ -338,6 +338,10 @@ export class HookRegistry {
 
 const TIMEOUT_SENTINEL: unique symbol = Symbol('taskflow.hook.timeout');
 
+/**
+ * A partial no-op logger. `debug` and `info` are silenced; `warn` and `error`
+ * are forwarded to `console.warn` / `console.error` respectively.
+ */
 export const noopLogger: HookLogger = {
   debug() {},
   info() {},
