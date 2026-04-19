@@ -707,11 +707,13 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
       }
       depPromises.push(p);
     }
-    try {
-      await Promise.all(depPromises);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const wrapped = new Error(`leaf "${spec.id}" aborted: dependency failed — ${msg}`);
+    const depResults = await Promise.allSettled(depPromises);
+    const failedIdx = depResults.findIndex(r => r.status === 'rejected');
+    if (failedIdx !== -1) {
+      const failedId = spec.dependsOn[failedIdx];
+      const reason = (depResults[failedIdx] as PromiseRejectedResult).reason;
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      const wrapped = new Error(`leaf "${spec.id}" aborted: dependency failed ("${failedId}") — ${msg}`);
       rejectMyPromise(wrapped);
       throw wrapped;
     }
