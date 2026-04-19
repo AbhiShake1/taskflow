@@ -225,7 +225,7 @@ const claudeCodeAdapter: AgentAdapter = {
         const sdk: any = await import('@anthropic-ai/claude-agent-sdk');
         const queryFn = sdk.query ?? sdk.default?.query;
         if (typeof queryFn !== 'function') {
-          throw new Error('claude-agent-sdk: `query` export not found');
+          throw new Error('claude-agent-sdk: `query` export not found (tried sdk.query and sdk.default.query) — ensure @anthropic-ai/claude-agent-sdk is installed and up to date');
         }
 
         // Prefer the runner-supplied repo cwd when present; fall back to runDir.
