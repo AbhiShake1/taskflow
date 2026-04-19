@@ -69,6 +69,7 @@ function App(props: AppInnerProps): React.ReactElement {
       if (id) {
         const n = state.nodes[id];
         if (n?.kind === 'leaf') state.setFocus(id);
+        else if (n?.kind === 'stage') state.toggleCollapsed(id);
       }
       return;
     }

@@ -30,6 +30,12 @@ export type TreeNode = {
    * for a phase only after some work runs (e.g. AI-generated summaries).
    */
   title?: string;
+  /**
+   * User-toggled collapse state for stages. When true, the stage is still
+   * rendered but its descendants are hidden from the flat tree. Leaves
+   * ignore this field.
+   */
+  collapsed?: boolean;
 };
 
 export type TuiState = {
@@ -47,6 +53,12 @@ export type TuiState = {
   moveSelection(delta: number): void;
   selectedNodeId(): string | undefined;
   getFlatTree(): TreeNode[];
+  /**
+   * Toggle the collapsed state of a stage node. Collapsed stages still exist
+   * in the tree — getFlatTree() just skips their descendants when emitting
+   * the flat preorder. No-op for leaves.
+   */
+  toggleCollapsed(stageId: string): void;
 };
 
 const LEAF_EVENT_CAP = 500;
@@ -60,6 +72,8 @@ function flatten(
     const node = nodes[id];
     if (!node) return;
     out.push(node);
+    // Collapsed stages are themselves visible — their descendants are hidden.
+    if (node.collapsed) return;
     for (const c of node.children) walk(c);
   };
   for (const id of rootIds) walk(id);
@@ -211,6 +225,20 @@ export function createTuiStore(
     getFlatTree(): TreeNode[] {
       const { nodes, rootIds } = get();
       return flatten(nodes, rootIds);
+    },
+
+    toggleCollapsed(stageId: string): void {
+      set(state => {
+        const existing = state.nodes[stageId];
+        if (!existing || existing.kind !== 'stage') return state;
+        return {
+          ...state,
+          nodes: {
+            ...state.nodes,
+            [stageId]: { ...existing, collapsed: !existing.collapsed },
+          },
+        };
+      });
     },
   }));
 

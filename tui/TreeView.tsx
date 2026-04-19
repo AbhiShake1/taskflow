@@ -26,10 +26,13 @@ function nodeLabel(node: TreeNode): string {
   // setTitle() from a phase body to give a cycle a meaningful label after
   // the title is discovered (e.g. an AI-generated improvement summary).
   const display = node.title ?? stripCounter(node.id);
+  // Collapsed stages: prefix with ▸ so the user sees grouping exists even
+  // when children are hidden. Expanded stages have the natural indent tell.
+  const collapsedMark = node.kind === 'stage' && node.collapsed ? '▸ ' : '';
   if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
-    return `${display} (${node.childProgress.done}/${node.childProgress.total})`;
+    return `${collapsedMark}${display} (${node.childProgress.done}/${node.childProgress.total})`;
   }
-  return display;
+  return `${collapsedMark}${display}`;
 }
 
 function nodeTail(node: TreeNode): string {

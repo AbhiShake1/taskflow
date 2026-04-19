@@ -116,6 +116,31 @@ describe('DetailView snapshot', () => {
   });
 });
 
+describe('toggleCollapsed', () => {
+  it('hides descendants of a collapsed stage from getFlatTree', () => {
+    const store = seed();
+    expect(store.getState().getFlatTree().map(n => n.id)).toEqual([
+      'scrape-don', 'discover', 'a',
+    ]);
+    store.getState().toggleCollapsed('discover');
+    expect(store.getState().getFlatTree().map(n => n.id)).toEqual([
+      'scrape-don', 'discover',
+    ]);
+    store.getState().toggleCollapsed('discover');
+    expect(store.getState().getFlatTree().map(n => n.id)).toEqual([
+      'scrape-don', 'discover', 'a',
+    ]);
+  });
+
+  it('is a no-op for leaves', () => {
+    const store = seed();
+    store.getState().toggleCollapsed('a');
+    expect(store.getState().getFlatTree().map(n => n.id)).toEqual([
+      'scrape-don', 'discover', 'a',
+    ]);
+  });
+});
+
 describe('App keyboard input', () => {
   it('moves selection on down-arrow', async () => {
     const store = seed();

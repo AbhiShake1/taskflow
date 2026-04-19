@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-04-19
+
+### Added
+- TUI: Enter on a stage toggles collapse/expand of its children. Collapsed stages keep their label (with a `▸` prefix so you see grouping still exists) but their descendants are hidden from the flat tree — useful for long-running harnesses where older completed cycles drown out the current work. Enter on a leaf still drills into the DetailView unchanged. New `TuiState.toggleCollapsed(stageId)` action + `TreeNode.collapsed` field; `getFlatTree()` honors the collapse.
+
 ## [0.1.14] - 2026-04-19
 
 ### Added
