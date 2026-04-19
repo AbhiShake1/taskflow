@@ -6,7 +6,8 @@
   "description": "Self-evolution harness — uses published taskflow-sdk to orchestrate 20 improvement cycles against this repo.",
   "scripts": {
     "start": "tsx evolve.ts",
-    "start:mock": "HARNESS_ADAPTER_OVERRIDE=mock HARNESS_NO_TTY=1 tsx evolve.ts"
+    "start:mock": "HARNESS_ADAPTER_OVERRIDE=mock HARNESS_NO_TTY=1 tsx evolve.ts",
+    "watch": "tsx watch.ts"
   },
   "dependencies": {
     "taskflow-sdk": "^0.1.4",
