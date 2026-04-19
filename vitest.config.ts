@@ -6,6 +6,10 @@ export default defineConfig({
     // keys, and live behind a dedicated `npm run test:real` script that
     // targets them explicitly. Keeping them out of the default glob means
     // `npm test` shows "N passed" with no skipped noise.
-    exclude: ['node_modules/**', '__tests__/real-*.test.ts'],
+    exclude: [
+      '**/node_modules/**',
+      'examples/**',
+      '__tests__/real-*.test.ts',
+    ],
   },
 });

@@ -1,6 +1,6 @@
 # OMAI Taskflow Plugin — Starter
 
-Scaffold for an opinionated downstream plugin that layers proof capture and UI-TARS-driven vision testing onto `taskflow-sdk`. This starter ships stubs; the real plugin implements screen capture and UI-TARS orchestration.
+Scaffold for an opinionated downstream plugin that layers proof capture and UI-TARS-driven vision testing onto `taskflowjs`. This starter ships stubs; the real plugin implements screen capture and UI-TARS orchestration.
 
 ## What the final plugin will do
 
@@ -14,8 +14,8 @@ Scaffold for an opinionated downstream plugin that layers proof capture and UI-T
 A compilable skeleton you copy into your own repo, rename, and fill in:
 
 ```ts
-import { taskflow } from 'taskflow-sdk';
-import { defineConfig } from 'taskflow-sdk/config';
+import { taskflow } from 'taskflowjs';
+import { defineConfig } from 'taskflowjs/config';
 import { omaiTaskflow } from './examples/omai-plugin-starter/plugin';
 
 export default defineConfig({
@@ -46,7 +46,7 @@ See [`plugin.ts`](./plugin.ts). The factory returns a `PluginContribution` with:
 - `name: 'omai'` — keys `ctx.plugins.omai` at runtime.
 - `events`: `afterSpawn`, `beforeToolCall`, `afterTaskDone` stubs.
 - `ctx`: builds the `ctx.plugins.omai` namespace with `captureScreen` and `driveUiTars`.
-- `declare module 'taskflow-sdk/core'` augmentation so TypeScript knows about `ctx.plugins.omai`.
+- `declare module 'taskflowjs/core'` augmentation so TypeScript knows about `ctx.plugins.omai`.
 
 ## Replace the stubs
 
@@ -57,9 +57,9 @@ See [`plugin.ts`](./plugin.ts). The factory returns a `PluginContribution` with:
 | `afterSpawn` recording start | Spawn `ffmpeg` or a platform recorder; store the handle on `ctx.state` keyed by leaf id. |
 | `afterTaskDone` finalize | Kill the recorder, write the video into `ctx.proof.captureFile(...)`, update `proof.json`. |
 
-## Why it lives in the taskflow-sdk repo as an example
+## Why it lives in the taskflowjs repo as an example
 
-This is a scaffold, not a published package. When you're ready to ship, copy it to a new repo `omai-taskflow` and publish as a separate npm package that depends on `taskflow-sdk`.
+This is a scaffold, not a published package. When you're ready to ship, copy it to a new repo `omai-taskflow` and publish as a separate npm package that depends on `taskflowjs`.
 
 ## License
 

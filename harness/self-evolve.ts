@@ -1,4 +1,4 @@
-// Self-evolution harness for the taskflow-sdk codebase.
+// Self-evolution harness for the taskflowjs codebase.
 //
 // Runs N small-improvement iterations against the parent repo. Each iteration
 // is a phase, with a self-healing verify loop and a final commit gated on
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
         const idea = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
-            `You are iteration ${i + 1} of ${ITERATIONS} in a self-evolution harness running against the taskflow-sdk repo at ${REPO_ROOT}.`,
+            `You are iteration ${i + 1} of ${ITERATIONS} in a self-evolution harness running against the taskflowjs repo at ${REPO_ROOT}.`,
             '',
             'Propose ONE small, safe improvement. Good candidates:',
             '- Fix a flaky or slow test.',
@@ -180,7 +180,7 @@ async function main(): Promise<void> {
         await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
-            `Implement this improvement in the taskflow-sdk repo at ${REPO_ROOT}:`,
+            `Implement this improvement in the taskflowjs repo at ${REPO_ROOT}:`,
             '',
             `Summary: ${idea.summary}`,
             `Rationale: ${idea.rationale}`,
