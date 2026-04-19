@@ -71,7 +71,7 @@ class InputStream implements AsyncIterable<InboundMessage> {
   close(): void {
     if (this._closed) return;
     this._closed = true;
-    for (const r of this.resolvers) r({ value: undefined as any, done: true });
+    for (const r of this.resolvers) r({ value: undefined, done: true });
     this.resolvers.length = 0;
   }
 
@@ -79,7 +79,7 @@ class InputStream implements AsyncIterable<InboundMessage> {
     return {
       next: () => {
         if (this.queue.length) return Promise.resolve({ value: this.queue.shift()!, done: false });
-        if (this._closed)      return Promise.resolve({ value: undefined as any, done: true });
+        if (this._closed)      return Promise.resolve({ value: undefined, done: true as const });
         return new Promise(res => this.resolvers.push(res));
       },
     };
@@ -491,8 +491,17 @@ const claudeCodeAdapter: AgentAdapter = {
   },
 };
 
+type SdkContentBlock =
+  | { type: 'tool_use'; name: string; input?: unknown }
+  | { type: 'tool_result'; tool_use_id?: string; content?: unknown };
+
+type SdkMessage =
+  | { type: 'assistant'; message?: { content?: SdkContentBlock[] }; error?: unknown }
+  | { type: 'user'; message?: { content?: SdkContentBlock[] } }
+  | { type: 'result'; is_error?: boolean; errors?: string[]; subtype?: string };
+
 /** Map one SDK message onto zero-or-more AgentEvents. */
-async function normalizeMessage(msg: any, leafId: string, ch: EventChannel<AgentEvent>): Promise<void> {
+async function normalizeMessage(msg: SdkMessage, leafId: string, ch: EventChannel<AgentEvent>): Promise<void> {
   if (!msg || typeof msg !== 'object') return;
 
   switch (msg.type) {
@@ -503,7 +512,7 @@ async function normalizeMessage(msg: any, leafId: string, ch: EventChannel<Agent
         ch.push({ t: 'message', leafId, role: 'assistant', content, ts: Date.now() });
       }
       // Surface tool_use blocks as separate tool events.
-      const blocks: any[] = Array.isArray(msg.message?.content) ? msg.message.content : [];
+      const blocks: SdkContentBlock[] = Array.isArray(msg.message?.content) ? msg.message.content : [];
       for (const b of blocks) {
         if (b && b.type === 'tool_use' && typeof b.name === 'string') {
           ch.push({
