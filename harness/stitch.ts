@@ -1,9 +1,9 @@
-// Standalone stitcher — for the infinite-mode loop where evolve.ts never
-// reaches its own stitch phase. Run whenever you want a snapshot demo
-// video from whatever frames have landed so far.
+// Standalone stitcher — for the infinite-mode self-evolve loop where the
+// harness never reaches its own stitch phase. Run whenever you want a
+// snapshot demo video from whatever frames have landed so far.
 //
-// Usage (from self-evolve/):
-//   npm run stitch
+// Usage (from the repo root):
+//   npm run evolve:stitch
 
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';

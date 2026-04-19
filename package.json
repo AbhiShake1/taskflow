@@ -57,6 +57,8 @@
     "build": "tsc -p tsconfig.build.json",
     "run": "tsx runner/index.ts",
     "plan": "tsx plan/cli.ts",
+    "evolve": "tsx runner/index.ts harness/self-evolve.ts",
+    "evolve:stitch": "tsx harness/stitch.ts",
     "test": "vitest run",
     "test:real": "HARNESS_REAL_TESTS=1 vitest run",
     "prepublishOnly": "npm run build && npm run test"

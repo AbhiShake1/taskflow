@@ -31,7 +31,7 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { taskflow } from 'taskflow-sdk';
+import { taskflow } from '../api/index';
 import { z } from 'zod';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..');
