@@ -26,6 +26,80 @@ await taskflow('hello').run(async ({ phase, session }) => {
 });
 ```
 
+## Install harnesses from anywhere — `taskflow add`
+
+Shadcn-style distribution: drop any harness into any project with a single command. Source forms accepted:
+
+```sh
+# named (resolves via built-in @taskflow registry)
+npx @taskflow-corp/cli add ui-harness-trio
+
+# namespaced (private or third-party registries configured in taskflow.json)
+npx @taskflow-corp/cli add @acme/e2e-video-tests
+
+# GitHub shortcut (degit-style)
+npx @taskflow-corp/cli add user/repo
+npx @taskflow-corp/cli add user/repo/path/to/item.json#v1.2.0
+
+# raw URL
+npx @taskflow-corp/cli add https://example.com/r/harness.json
+
+# local file
+npx @taskflow-corp/cli add ./my-harness.json
+
+# fully qualified (Terraform grammar: type::url//subpath?ref=&sha256=&depth=)
+npx @taskflow-corp/cli add git::ssh://git@host/org/repo.git//items/foo?ref=main
+```
+
+Every form fetches → validates → writes files → patches `.agents/taskflow/config.ts` → updates `taskflow.lock`. The first `add` in a project auto-runs `init` to scaffold `taskflow.json`, config, and dirs.
+
+Adjacent commands:
+
+| Command | Purpose |
+|---|---|
+| `taskflow init` | Create `taskflow.json` + `.agents/taskflow/config.ts` |
+| `taskflow add <source...>` | Install one or more harnesses |
+| `taskflow view <source>` | Print the resolved registry item JSON (no write) |
+| `taskflow list` | Show installed harnesses from `taskflow.lock` |
+| `taskflow search <query>` | Fuzzy-match against the public registry index |
+| `taskflow update [name...]` | Re-resolve and refresh installed harnesses |
+| `taskflow remove <name>` | Uninstall |
+| `taskflow apply <preset>` | Re-install with `--overwrite` (shadcn-style re-skin) |
+| `taskflow build [input]` | Publisher: inline file contents, emit `r/*.json` |
+| `taskflow mcp` | Start the MCP server over stdio (tools: `list_harnesses`, `search`, `install`) |
+
+Flags on `add`: `-y/--yes`, `-o/--overwrite`, `--dry-run`, `--diff`, `--view`, `-p/--path <dir>`, `-c/--cwd <dir>`, `-s/--silent`, `--frozen`, `--skip-adapter-check`.
+
+### Private registries with auth
+
+Put this in your project's `taskflow.json`:
+
+```jsonc
+{
+  "$schema": "https://taskflow.sh/schema/taskflow.json",
+  "version": "1",
+  "registries": {
+    "@acme": "https://registry.acme.com/r/{name}.json",
+    "@private": {
+      "url": "https://api.corp.com/taskflow/{name}.json",
+      "headers": { "Authorization": "Bearer ${TASKFLOW_TOKEN}" },
+      "params":  { "v": "latest" }
+    }
+  }
+}
+```
+
+`${VAR}` tokens are expanded from `process.env` (auto-loaded from `.env.local`). Missing vars fail pre-flight with a clear message.
+
+### Publishing your own registry
+
+1. Create `registry/registry.json` listing your items (see `registry/` in this repo for an example).
+2. Store each item as a source `.ts` file referenced by `files[].path`.
+3. Run `npx @taskflow-corp/cli build` — emits `r/<item>.json` with file contents inlined plus `r/registry.json`.
+4. Host the `r/` directory anywhere (GitHub Pages, S3, your own CDN). Consumers then `taskflow add https://<your-host>/r/my-item.json` or register the namespace in their `taskflow.json`.
+
+Full design notes: [docs/add-command-plan.md](./docs/add-command-plan.md).
+
 ## Hooks via `.agents/taskflow/config.ts`
 
 ```ts

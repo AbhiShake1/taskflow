@@ -27,6 +27,9 @@
     "node_modules",
     "dist",
     "__tests__/**",
+    "**/__tests__/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
     "tasks/**",
     "data/**"
   ]

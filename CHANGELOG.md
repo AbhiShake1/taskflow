@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2026-04-19
+
+### Added
+- **`taskflow add` — shadcn-style harness distribution.** Drop any harness into any project with a single command. Source forms:
+  - Named: `taskflow add ui-harness-trio` (built-in `@taskflow` registry via `TASKFLOW_REGISTRY_URL`, default `https://taskflow.sh/r`)
+  - Namespaced: `taskflow add @acme/my-harness` (resolves via `registries` map in `taskflow.json`)
+  - Raw URL: `taskflow add https://example.com/r/harness.json`
+  - Local file: `taskflow add ./my-harness.json`
+  - GitHub shortcut (degit-style): `taskflow add user/repo/path/to/item.json#v1.2.0`, also `github:`, `gitlab:`, `bitbucket:` host prefixes
+  - Fully qualified (Terraform grammar): `taskflow add git::ssh://git@host/org/repo.git//sub?ref=v1&sha256=...&depth=1`
+- `taskflow init` — scaffolds `taskflow.json` + `.agents/taskflow/config.ts` + harness/rules dirs. Auto-invoked by `add` on first use.
+- `taskflow build` — publisher side: reads `registry.json` + source files and emits `r/<item>.json` with file contents inlined (one fetch per install).
+- `taskflow view <source>`, `taskflow list`, `taskflow search <query>`, `taskflow update [name...]`, `taskflow remove <name>`, `taskflow apply <preset>` — adjacent lifecycle commands.
+- `taskflow mcp` — Model Context Protocol server over stdio. Exposes `list_harnesses`, `search`, `install` tools so Claude Code / Cursor / Codex can discover and install harnesses autonomously.
+- `taskflow.lock` — content-addressed lockfile (`source` + `type` + optional `sha256`). `--frozen` errors on drift in CI.
+- `${VAR}` env-var interpolation in `registries` URLs, headers, and params. Auto-loads `.env` / `.env.local`.
+- `taskflow:config-patch` items are merged into the project's `.agents/taskflow/config.ts` via ts-morph AST rewrite (no more sidecar files).
+- Starter registry under `registry/` with two example harnesses — build it with `taskflow build -c registry` and point consumers at the emitted `r/`.
+
+### CLI rewrite
+- `cli/index.ts` migrated from hand-rolled argv to `cac`. Existing `run | watch | plan` subcommands behave identically. New commands listed above layer on top.
+
+### Docs
+- New design document at `docs/add-command-plan.md` covering the three-tier source grammar, file shapes (`taskflow.json`, `registry.json`, `registry-item.json`, `taskflow.lock`), module layout, scored decisions, and phased rollout.
+
 ## [0.1.15] - 2026-04-19
 
 ### Added
