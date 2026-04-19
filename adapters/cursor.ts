@@ -6,8 +6,10 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
-// TODO(taskflow): upgrade to cursor-native structured output if/when the
-// cursor-agent CLI exposes one. For now we use prompt-engineered fallback.
+// Structured output (2026-04): cursor-agent CLI has no native schema mode.
+// --output-format json|stream-json is envelope-only (no schema constraint), so
+// we use prompt-engineered JSON via structured-output.ts. Revisit if/when
+// cursor exposes --output-schema or similar.
 import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
@@ -185,8 +187,10 @@ const cursorAdapter: AgentAdapter = {
         let msg: CursorMsg;
         try {
           msg = JSON.parse(line) as CursorMsg;
-        } catch {
-          ch.push({ t: 'error', leafId, error: `malformed json: ${line}`, ts: Date.now() });
+        } catch (parseErr) {
+          const snippet = line.length > 200 ? line.slice(0, 200) + '…' : line;
+          const detail = parseErr instanceof SyntaxError ? `: ${parseErr.message}` : '';
+          ch.push({ t: 'error', leafId, error: `malformed json${detail}: ${snippet}`, ts: Date.now() });
           return;
         }
         handleCursorMsg(msg);

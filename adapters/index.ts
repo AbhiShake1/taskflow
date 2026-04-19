@@ -90,7 +90,7 @@ export class EventChannel<T> {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const r of this.resolvers) r({ value: undefined as any, done: true });
+    for (const r of this.resolvers) r({ value: undefined, done: true });
     this.resolvers.length = 0;
   }
 
@@ -98,7 +98,7 @@ export class EventChannel<T> {
     return {
       next: () => {
         if (this.queue.length) return Promise.resolve({ value: this.queue.shift()!, done: false });
-        if (this.closed)       return Promise.resolve({ value: undefined as any, done: true });
+        if (this.closed)       return Promise.resolve({ value: undefined, done: true as const });
         return new Promise(res => this.resolvers.push(res));
       },
     };

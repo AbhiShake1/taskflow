@@ -86,6 +86,16 @@ describe('HookRegistry', () => {
     expect(msgRet).toEqual({ content: 'rewritten', drop: true });
   });
 
+  it('before* mutation merge: array-valued keys are concatenated across handlers', async () => {
+    const reg = new HookRegistry();
+    reg.register('beforeToolCall', async () => ({ args: ['a', 'b'] }));
+    reg.register('beforeToolCall', async () => ({ args: ['c'] }));
+    const ret = await reg.fire('beforeToolCall', makeCtx(), {
+      ev: { t: 'tool', leafId: 'l', name: 'bash', args: {}, ts: 0 },
+    });
+    expect((ret as { args: string[] }).args).toEqual(['a', 'b', 'c']);
+  });
+
   it('error policy "swallow": throwing handler does not break the chain', async () => {
     const reg = new HookRegistry({ errorPolicy: 'swallow' });
     const order: string[] = [];

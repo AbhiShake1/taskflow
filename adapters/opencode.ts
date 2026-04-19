@@ -6,9 +6,11 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
-// TODO(taskflow): upgrade to opencode-native structured output once the ACP
-// protocol exposes a schema/response-format channel. For now we use prompt-
-// engineered fallback.
+// Structured output (2026-04): opencode CLI has no native schema flag.
+// Schema support exists in the opencode SDK (PR anomalyco/opencode#8161) but
+// not in the CLI/ACP channel we use here. Tracking CLI support:
+// anomalyco/opencode#10456. Until then we use prompt-engineered JSON via
+// structured-output.ts.
 import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
@@ -125,8 +127,10 @@ const opencodeAdapter: AgentAdapter = {
         let msg: AcpMsg;
         try {
           msg = JSON.parse(line) as AcpMsg;
-        } catch {
-          ch.push({ t: 'error', leafId, error: `malformed json: ${line}`, ts: Date.now() });
+        } catch (parseErr) {
+          const snippet = line.length > 200 ? line.slice(0, 200) + '…' : line;
+          const detail = parseErr instanceof SyntaxError ? `: ${parseErr.message}` : '';
+          ch.push({ t: 'error', leafId, error: `malformed json${detail}: ${snippet}`, ts: Date.now() });
           return;
         }
         handleAcpMsg(msg);
