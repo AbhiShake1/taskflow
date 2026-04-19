@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-04-19
+
+### Changed
+- TUI: per-status colors (green=done, red=error, yellow=timeout/aborted, cyan=running), bold emphasis on the active leaf, and a live spinner for running nodes (10fps). Activity sub-line under running leaves surfaces the latest tool call / assistant message snippet so you can see what's happening between state transitions instead of a frozen glyph.
+- `store.ts` exposes `statusColor()`, `liveStatusGlyph()`, `latestActivity()` helpers so downstream TUI consumers (e.g. a live `watch` viewer) can reuse the same visual language.
+
 ## [0.1.4] - 2026-04-18
 
 ### Added

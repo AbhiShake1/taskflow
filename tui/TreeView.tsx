@@ -1,11 +1,17 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { TuiState, TreeNode } from './store';
-import { formatElapsed, statusGlyph } from './store';
+import type { TreeNode, TuiState } from './store';
+import { formatElapsed, latestActivity, liveStatusGlyph, statusColor } from './store';
 
 export type TreeViewProps = {
   state: TuiState;
   hintText?: string;
+  /**
+   * Monotonically-increasing tick from the parent App. Not read directly — its
+   * mere presence re-renders this component, so elapsed clocks and the
+   * running-status spinner advance without needing incoming events.
+   */
+  tick?: number;
 };
 
 function depth(node: TreeNode, nodes: Record<string, TreeNode>): number {
@@ -19,7 +25,6 @@ function depth(node: TreeNode, nodes: Record<string, TreeNode>): number {
 }
 
 function nodeLabel(node: TreeNode): string {
-  // In plan mode there is no runtime progress — suppress the (done/total) tag.
   if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
     return `${node.id} (${node.childProgress.done}/${node.childProgress.total})`;
   }
@@ -30,7 +35,6 @@ function nodeTail(node: TreeNode): string {
   const parts: string[] = [];
   if (node.agent && node.agent !== 'unknown') parts.push(node.agent);
   if (node.model) parts.push(node.model);
-  // Suppress elapsed for 'plan' status — there is no clock in plan mode.
   if (node.status !== 'plan') {
     parts.push(formatElapsed(node.startedAt, node.endedAt));
   }
@@ -48,19 +52,35 @@ export function TreeView({ state, hintText }: TreeViewProps): React.ReactElement
       {flat.map((node, idx) => {
         const d = depth(node, state.nodes);
         const indent = '  '.repeat(d);
-        const glyph = statusGlyph(node.status);
+        const glyph = liveStatusGlyph(node.status);
         const label = nodeLabel(node);
         const tail = nodeTail(node);
         const isSelected = idx === selectedIdx;
-        const rowText = `${indent}${glyph} ${label}`;
+        const color = statusColor(node.status);
+        const bold = node.status === 'running';
+        const dim = node.status === 'pending';
+        const activity =
+          node.status === 'running' && node.kind === 'leaf'
+            ? latestActivity(node) ?? '⟳ waiting for first response'
+            : undefined;
+
         return (
-          <Box key={node.id} flexDirection="row">
-            <Box>
-              <Text inverse={isSelected}>{rowText}</Text>
+          <Box key={node.id} flexDirection="column">
+            <Box flexDirection="row">
+              <Box>
+                <Text color={color} bold={bold} dimColor={dim} inverse={isSelected}>
+                  {`${indent}${glyph} ${label}`}
+                </Text>
+              </Box>
+              {tail ? (
+                <Box marginLeft={2}>
+                  <Text dimColor>{tail}</Text>
+                </Box>
+              ) : null}
             </Box>
-            {tail ? (
-              <Box marginLeft={2}>
-                <Text dimColor>{tail}</Text>
+            {activity ? (
+              <Box marginLeft={d * 2 + 4}>
+                <Text color="cyan" dimColor>{activity}</Text>
               </Box>
             ) : null}
           </Box>

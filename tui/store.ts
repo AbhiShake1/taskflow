@@ -241,3 +241,56 @@ export function statusGlyph(status: TreeNodeStatus): string {
     default: return '·';
   }
 }
+
+// Color per status. Returns undefined for "use the default terminal color".
+export function statusColor(status: TreeNodeStatus): string | undefined {
+  switch (status) {
+    case 'running': return 'cyan';
+    case 'done': return 'green';
+    case 'error': return 'red';
+    case 'aborted':
+    case 'timeout': return 'yellow';
+    case 'plan': return 'cyan';
+    case 'pending': return undefined;
+    default: return undefined;
+  }
+}
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// Live-animated glyph: returns a spinner frame for running nodes (frame index
+// derived from `now` so no store state ticks required), otherwise the static
+// status glyph.
+export function liveStatusGlyph(status: TreeNodeStatus, now: number = Date.now()): string {
+  if (status === 'running') {
+    const frame = Math.floor(now / 100) % SPINNER_FRAMES.length;
+    return SPINNER_FRAMES[frame]!;
+  }
+  return statusGlyph(status);
+}
+
+// Summarize the most recent meaningful event on a node so running leaves can
+// show "what they're doing" between state transitions. Returns undefined when
+// the node has no events yet (fresh spawn) or its events are all
+// non-informative — callers can fall back to a "waiting…" placeholder.
+export function latestActivity(node: TreeNode): string | undefined {
+  for (let i = node.leafEvents.length - 1; i >= 0; i--) {
+    const ev = node.leafEvents[i];
+    if (!ev) continue;
+    if (ev.t === 'tool') {
+      const argPreview = typeof ev.args === 'object' && ev.args && 'command' in (ev.args as Record<string, unknown>)
+        ? String((ev.args as { command?: unknown }).command ?? '').split('\n')[0]?.slice(0, 50)
+        : undefined;
+      return argPreview ? `▸ ${ev.name}: ${argPreview}` : `▸ ${ev.name}`;
+    }
+    if (ev.t === 'tool-res') return `▹ ${ev.name} done`;
+    if (ev.t === 'message' && ev.role === 'assistant' && typeof ev.content === 'string' && ev.content.length > 0) {
+      const first = ev.content.split('\n').find((l) => l.trim().length > 0) ?? '';
+      return `▹ ${first.slice(0, 60)}`;
+    }
+    if (ev.t === 'edit') return `✎ ${ev.file} (+${ev.added}/-${ev.removed})`;
+    if (ev.t === 'error') return `✗ ${ev.error.slice(0, 60)}`;
+    if (ev.t === 'steer') return `↻ steer: ${ev.content.slice(0, 60)}`;
+  }
+  return undefined;
+}

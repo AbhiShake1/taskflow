@@ -21,6 +21,14 @@ function App(props: AppInnerProps): React.ReactElement {
   const state = store();
   const { exit } = useApp();
   const [steerBuffer, setSteerBuffer] = useState('');
+  // Live tick: drives the running-status spinner and the elapsed clock so the
+  // UI updates between incoming events. 10 FPS is smooth enough for a spinner
+  // without being wasteful.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 100);
+    return () => clearInterval(id);
+  }, []);
 
   useInput((input, key) => {
     if (state.focusedLeafId) {
@@ -95,7 +103,7 @@ function App(props: AppInnerProps): React.ReactElement {
     );
   }
 
-  return <TreeView state={state} />;
+  return <TreeView state={state} tick={tick} />;
 }
 
 export function mountTui(
