@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { taskflow } from 'taskflowjs';
+import { taskflow } from '@taskflow-corp/cli';
 
 const Feature = z
   .object({

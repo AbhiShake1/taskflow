@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
+import { log, multiselect, isCancel } from '@clack/prompts';
+
 import { buildUrlAndHeadersForRegistryItem } from './builder';
 import { setRegistryHeaders } from './context';
+import { discover, type DiscoverHit } from './discover';
 import { RegistryFetchError } from './errors';
 import { fetchRegistry, fetchRegistryLocal } from './fetcher';
 import {
@@ -11,6 +14,7 @@ import {
 } from './git';
 import { parseSource, type SourceSpec } from './parser';
 import type { RegistryConfig, RegistryItem } from './schema';
+import { synthesizeFromDiscoverHit } from './synthesize';
 
 export interface ResolvedItem {
   source: SourceSpec;
@@ -18,7 +22,108 @@ export interface ResolvedItem {
   sourceUrl: string;
 }
 
+export interface ResolverOptions {
+  yes?: boolean;
+  silent?: boolean;
+  cwd?: string;
+}
+
 type ResolverConfig = { registries?: RegistryConfig; style?: string } | null;
+
+export function isBareRepoShortcut(spec: SourceSpec): boolean {
+  return (
+    spec.kind === 'shortcut' &&
+    (spec.subpath === undefined || spec.subpath === '')
+  );
+}
+
+function shortcutSourceString(
+  host: string,
+  user: string,
+  repo: string,
+  path: string,
+  branch: string,
+): string {
+  return `${host}:${user}/${repo}/${path}#${branch}`;
+}
+
+export async function discoverAndSynthesize(
+  spec: Extract<SourceSpec, { kind: 'shortcut' }>,
+  opts: ResolverOptions,
+): Promise<ResolvedItem[]> {
+  const repoRef = `${spec.user}/${spec.repo}`;
+  const response = await discover({ repo: repoRef, limit: 50 });
+  const hits = response.hits;
+
+  if (hits.length === 0) {
+    throw new Error(
+      `No taskflow harnesses found in ${repoRef}. If this repo ships a registry-item.json, pass the path explicitly.`,
+    );
+  }
+
+  const chosen: DiscoverHit[] =
+    hits.length === 1
+      ? [hits[0]]
+      : await pickHits(hits, spec, opts);
+
+  const resolved: ResolvedItem[] = [];
+  for (const hit of chosen) {
+    const result = await synthesizeFromDiscoverHit(hit);
+    if ('reject' in result) {
+      if (opts.silent !== true) {
+        log.warn(`Skipping ${hit.repo}/${hit.path}: ${result.reason}`);
+      }
+      continue;
+    }
+    const derivedSpec: SourceSpec = {
+      kind: 'shortcut',
+      host: spec.host,
+      user: spec.user,
+      repo: spec.repo,
+      subpath: hit.path,
+      ref: hit.branch,
+    };
+    resolved.push({
+      source: derivedSpec,
+      item: result.item,
+      sourceUrl: shortcutSourceString(
+        spec.host,
+        spec.user,
+        spec.repo,
+        hit.path,
+        hit.branch,
+      ),
+    });
+  }
+  return resolved;
+}
+
+async function pickHits(
+  hits: DiscoverHit[],
+  spec: Extract<SourceSpec, { kind: 'shortcut' }>,
+  opts: ResolverOptions,
+): Promise<DiscoverHit[]> {
+  const repoRef = `${spec.user}/${spec.repo}`;
+  if (opts.yes === true) {
+    throw new Error(
+      `Multiple harnesses discovered in ${repoRef}; re-run without --yes and pick which to install, or pass a specific path (user/repo/path/to/file.ts).`,
+    );
+  }
+  const choices = hits.map((hit) => {
+    const firstLine = hit.matchLines[0]?.content ?? '';
+    const hint = firstLine.slice(0, 60);
+    return { value: hit, label: hit.path, hint };
+  });
+  const picked = await multiselect<DiscoverHit>({
+    message: `Discovered ${hits.length} harnesses in ${repoRef}. Pick which to install:`,
+    options: choices,
+    required: true,
+  });
+  if (isCancel(picked)) {
+    throw new Error('taskflow add: discovery selection cancelled');
+  }
+  return picked as DiscoverHit[];
+}
 
 function normalizeSourceKey(input: string): string {
   return input.trim();
@@ -73,27 +178,28 @@ async function fetchHttpsWithIntegrity(
 async function resolveOne(
   input: string,
   config: ResolverConfig,
-): Promise<ResolvedItem> {
+  opts: ResolverOptions,
+): Promise<ResolvedItem[]> {
   const source = parseSource(input);
 
   if (source.kind === 'local') {
     const item = await fetchRegistryLocal(source.path);
-    return { source, item, sourceUrl: source.path };
+    return [{ source, item, sourceUrl: source.path }];
   }
 
   if (source.kind === 'url') {
     const item = await fetchRegistry(source.url);
-    return { source, item, sourceUrl: source.url };
+    return [{ source, item, sourceUrl: source.url }];
   }
 
   if (source.kind === 'qualified') {
     if (source.type === 'file') {
       const item = await fetchRegistryLocal(source.url);
-      return { source, item, sourceUrl: source.url };
+      return [{ source, item, sourceUrl: source.url }];
     }
     if (source.type === 'https') {
       const item = await fetchHttpsWithIntegrity(source.url, source.sha256);
-      return { source, item, sourceUrl: source.url };
+      return [{ source, item, sourceUrl: source.url }];
     }
     const gitOpts: { ref?: string; sha256?: string; depth?: number; subpath?: string } = {};
     if (source.ref !== undefined) gitOpts.ref = source.ref;
@@ -102,10 +208,34 @@ async function resolveOne(
     if (source.subpath !== undefined) gitOpts.subpath = source.subpath;
     const fetched = await fetchFromGitQualified(source.url, gitOpts);
     const item = await readRegistryItemFromCache(fetched.cacheDir, source.subpath);
-    return { source, item, sourceUrl: source.url };
+    return [{ source, item, sourceUrl: source.url }];
   }
 
   if (source.kind === 'shortcut') {
+    if (isBareRepoShortcut(source)) {
+      // Try conventional registry-item.json at repo root first; if that
+      // fails, fall back to discovery.
+      try {
+        const probeSource = { ...source, subpath: 'registry-item.json' };
+        const gitSource = {
+          host: probeSource.host,
+          user: probeSource.user,
+          repo: probeSource.repo,
+          ...(probeSource.ref !== undefined ? { ref: probeSource.ref } : {}),
+          subpath: 'registry-item.json',
+        };
+        const fetched = await fetchFromGitShortcut(gitSource);
+        const item = await readRegistryItemFromCache(
+          fetched.cacheDir,
+          'registry-item.json',
+        );
+        const sourceUrl = `${source.host}:${source.user}/${source.repo}/registry-item.json${source.ref ? `#${source.ref}` : ''}`;
+        return [{ source, item, sourceUrl }];
+      } catch {
+        // Fall through to discovery.
+      }
+      return discoverAndSynthesize(source, opts);
+    }
     const gitSource = {
       host: source.host,
       user: source.user,
@@ -116,7 +246,7 @@ async function resolveOne(
     const fetched = await fetchFromGitShortcut(gitSource);
     const item = await readRegistryItemFromCache(fetched.cacheDir, source.subpath);
     const sourceUrl = `${source.host}:${source.user}/${source.repo}${source.subpath ? `/${source.subpath}` : ''}${source.ref ? `#${source.ref}` : ''}`;
-    return { source, item, sourceUrl };
+    return [{ source, item, sourceUrl }];
   }
 
   if (source.kind === 'namespace') {
@@ -125,26 +255,31 @@ async function resolveOne(
     if (!built) throw new RegistryFetchError(key, undefined, 'Failed to build registry URL.');
     setRegistryHeaders({ [built.url]: built.headers });
     const item = await fetchRegistry(built.url, built.headers);
-    return { source, item, sourceUrl: built.url };
+    return [{ source, item, sourceUrl: built.url }];
   }
 
   const built = buildUrlAndHeadersForRegistryItem(source.name, config);
   if (!built) throw new RegistryFetchError(source.name, undefined, 'Failed to build registry URL.');
   setRegistryHeaders({ [built.url]: built.headers });
   const item = await fetchRegistry(built.url, built.headers);
-  return { source, item, sourceUrl: built.url };
+  return [{ source, item, sourceUrl: built.url }];
 }
 
 export async function fetchRegistryItems(
   inputs: string[],
   config: ResolverConfig,
+  opts: ResolverOptions = {},
 ): Promise<ResolvedItem[]> {
-  return Promise.all(inputs.map((input) => resolveOne(input, config)));
+  const batches = await Promise.all(
+    inputs.map((input) => resolveOne(input, config, opts)),
+  );
+  return batches.flat();
 }
 
 export async function resolveRegistryTree(
   inputs: string[],
   config: ResolverConfig,
+  opts: ResolverOptions = {},
 ): Promise<ResolvedItem[]> {
   const resolvedByName = new Map<string, ResolvedItem>();
   const insertionOrder: string[] = [];
@@ -160,18 +295,20 @@ export async function resolveRegistryTree(
 
   while (queue.length > 0) {
     const input = queue.shift() as string;
-    const resolved = await resolveOne(input, config);
-    const name = resolved.item.name;
-    if (!resolvedByName.has(name)) {
-      resolvedByName.set(name, resolved);
-      insertionOrder.push(name);
-    }
-    const deps = resolved.item.registryDependencies ?? [];
-    for (const dep of deps) {
-      const depKey = normalizeSourceKey(dep);
-      if (visited.has(depKey)) continue;
-      visited.add(depKey);
-      queue.push(dep);
+    const resolvedBatch = await resolveOne(input, config, opts);
+    for (const resolved of resolvedBatch) {
+      const name = resolved.item.name;
+      if (!resolvedByName.has(name)) {
+        resolvedByName.set(name, resolved);
+        insertionOrder.push(name);
+      }
+      const deps = resolved.item.registryDependencies ?? [];
+      for (const dep of deps) {
+        const depKey = normalizeSourceKey(dep);
+        if (visited.has(depKey)) continue;
+        visited.add(depKey);
+        queue.push(dep);
+      }
     }
   }
 

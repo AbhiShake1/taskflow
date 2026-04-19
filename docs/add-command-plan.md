@@ -9,7 +9,7 @@
 One command, anywhere, any source: drop a taskflow harness into any project and run it.
 
 ```bash
-npx @taskflow-corp/cli add ui-harness-trio                            # named (default registry)
+npx @taskflow-corp/cli add example-hello                              # named (default registry)
 npx @taskflow-corp/cli add @acme/e2e-video-tests                      # namespaced
 npx @taskflow-corp/cli add user/repo                                  # GitHub shortcut
 npx @taskflow-corp/cli add user/repo/examples/ui-plan#v1.2.0          # with subpath + ref
@@ -129,9 +129,9 @@ Rules:
 ```jsonc
 {
   "$schema": "https://taskflow.sh/schema/registry-item.json",
-  "name": "ui-harness-trio",
+  "name": "acme-harness",
   "type": "taskflow:harness",
-  "description": "Three-agent UI generation pipeline",
+  "description": "Example harness",
   "version": "1.2.0",
   "author": "acme",
   "license": "MIT",
@@ -144,7 +144,7 @@ Rules:
   "registryDependencies": ["@acme/utils-fs", "./local/shared.json"],
 
   "files": [
-    { "path": "harness/ui-harness-trio.ts", "type": "taskflow:harness", "content": "..." },
+    { "path": "harness/acme-harness.ts", "type": "taskflow:harness", "content": "..." },
     { "path": "harness/utils/playwright.ts", "type": "taskflow:utils",   "content": "..." },
     { "path": ".agents/taskflow/rules/ui.md", "type": "taskflow:rules", "target": ".agents/taskflow/rules/ui.md", "content": "..." }
   ],
@@ -156,7 +156,7 @@ Rules:
 
   "envVars": { "TASKFLOW_DEFAULT_ADAPTER": "claude-code" },
 
-  "docs": "https://acme.example/docs/ui-harness-trio"
+  "docs": "https://acme.example/docs/acme-harness"
 }
 ```
 
@@ -180,8 +180,8 @@ Rules:
 {
   "version": "1",
   "items": {
-    "ui-harness-trio": {
-      "source": "git::https://github.com/acme/harnesses.git//items/ui-harness-trio?ref=v1.2.0",
+    "acme-harness": {
+      "source": "git::https://github.com/acme/harnesses.git//items/acme-harness?ref=v1.2.0",
       "resolvedCommit": "a1b2c3d...",
       "sha256": "ff00...",
       "type": "taskflow:harness",
@@ -366,7 +366,7 @@ Shadcn does not support git-hosted registries natively — users must use `raw.g
 - **Write tests**: fs-fixture + `memfs`. Cover overwrite prompt, `--overwrite`, `.env` merge-not-overwrite.
 - **Lockfile tests**: add → update → remove round-trip; `--frozen` must error on drift.
 - **Snapshot tests** for `--dry-run` output (reviewer-friendly).
-- **Real-world smoke**: actually add one of `examples/ui-harness-trio/` from a mocked `@taskflow` registry into a throwaway project and run it.
+- **Real-world smoke**: actually add one of the registry items under `registry/items/` from a mocked `@taskflow` registry into a throwaway project and run it.
 
 ---
 
@@ -390,3 +390,46 @@ Shadcn does not support git-hosted registries natively — users must use `raw.g
 - Deno lockfile + `DENO_AUTH_TOKENS`: `docs.deno.com/runtime/fundamentals/modules`
 - pnpm source specifiers: `pnpm.io/cli/add`
 - gh extension install: `cli.github.com/manual/gh_extension_install`
+
+---
+
+## 15. Auto-discovery
+
+**Problem solved.** Tier 2's shortcut (`user/repo`) only works when the target repo publishes a `registry-item.json`. But the 80% case is a taskflow harness living in a random GitHub repo with no registry metadata — an `examples/foo.ts` that imports `@taskflow-corp/cli` and `taskflow(...).run(...)`. Consumers shouldn't have to hunt for the path and type `user/repo/examples/foo.ts`; they should be able to type `user/repo` and get a multi-select of every harness the repo contains. This section covers that zero-config discovery flow (landed in 0.1.22).
+
+**Trigger & scope.**
+- Typing `taskflow add <user>/<repo>` with NO subpath, AFTER the existing Tier 2 `registry-item.json` fetch returns 404.
+- Also folded into `taskflow search <query>` so keyword search spans the whole GitHub index, not just configured registries.
+- Never triggers for any other source form (local file, URL, namespace, fully qualified, or Tier 2 WITH a subpath).
+
+**Architecture.**
+
+```
+CLI (cli/add/registry/discover.ts)
+  └─► HTTP GET ${TASKFLOW_DISCOVER_URL:-https://<pages>/api/discover}?repo=<u/r>&q=<...>&limit=25
+        └─► Cloudflare Pages Function (web/functions/api/discover.ts)
+              ├─ KV cache hit (10 min) → return { source: 'cache', hits }
+              ├─ Browser Rendering (@cloudflare/puppeteer) → grep.app/search XHR → { source: 'grep.app', hits }
+              └─ fallback: GitHub Code Search API (bearer PAT) → { source: 'github', hits }
+        ◄── 200 { source, hits: [{ repo, branch, path, sha, matchLines, url, rawUrl }] }
+
+CLI (cli/add/registry/synthesize.ts)
+  └─► validate each hit (regex: imports taskflow pkg, not test, not config, contains taskflow(...) call)
+        └─► fetch rawUrl, synthesize RegistryItem { type: 'taskflow:harness', files: [{ content }] }
+              └─► existing pipeline (preflight → write → lockfile)
+```
+
+See the overall design context in `.claude/plans/curious-wobbling-stearns.md`.
+
+**Decision log.**
+
+- **grep.app vs GitHub Code Search as primary.** grep.app (10) is ~10× faster and returns full-file-context matches; GitHub Code Search (6) rate-limits aggressively at 10 req/min unauthenticated and its snippet shape is less useful. Pick **grep.app as primary, GitHub Code Search as fallback**. Falling back, not erroring, keeps the flow up during upstream issues.
+- **Cloudflare Browser Rendering vs scheduled cookie-refresh worker.** grep.app sits behind Vercel's bot challenge (`x-vercel-mitigated: challenge`, 429 on non-browser UA). Options: (a) scheduled worker that refreshes a cookie into KV every N min (7, polling — explicitly out of scope per §15 goal), (b) Cloudflare Browser Rendering per request (9, on-demand headless browser, no polling), (c) paid scraping API (5, extra vendor). Pick **(b) Browser Rendering**. Cold-start ~2s, warm ~500ms. Per-request KV cache (10 min) absorbs bursts.
+- **Synthesis: regex vs AST.** Full ts-morph AST would eliminate false positives but doubles CLI cold-start time for every discovered file. Pick **regex-based validator** for v1 (imports + `taskflow(...)` call + path-not-test-or-config). False-positive risk is low because we only match files that import the taskflow package in the first place. Tighten with AST later if noise shows up.
+- **`--yes` with >1 hits → error, not auto-install.** Score: auto-install everything (3, surprising), install first hit (4, arbitrary), error with actionable hint (9, safe). Pick **error**. `taskflow add` already walks public GitHub code; silently installing N files a user never saw is a step too far.
+- **Results cached 10 min in Workers KV.** Long enough to absorb `add` + re-run retries, short enough that a freshly-pushed harness is discoverable within the same coffee break.
+
+**Out of scope for this iteration.**
+- Inferring `registryDependencies` / `requiredAdapters` / `requiredEnv` from the synthesized source. Conservative defaults only for v1.
+- Non-GitHub hosts (GitLab, Bitbucket). Add a provider in the Pages Function.
+- Authenticated private-repo discovery. GitHub Code Search can do it with user tokens; defer.

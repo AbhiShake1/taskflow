@@ -1,4 +1,4 @@
-import { taskflow } from 'taskflowjs';
+import { taskflow } from '@taskflow-corp/cli';
 
 async function main(): Promise<void> {
   await taskflow('example-hello').run(async ({ phase, session }) => {

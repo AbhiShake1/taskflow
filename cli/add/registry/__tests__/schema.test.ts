@@ -8,7 +8,7 @@ import {
 describe('registryItemSchema', () => {
   it('parses a minimal valid item', () => {
     const result = registryItemSchema.safeParse({
-      name: 'ui-harness-trio',
+      name: 'ui-harness',
       type: 'taskflow:harness',
     });
     expect(result.success).toBe(true);

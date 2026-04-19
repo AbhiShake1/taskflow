@@ -63,7 +63,7 @@ describe('mcpSearch', () => {
         res.end(
           JSON.stringify({
             items: [
-              { name: 'ui-harness-trio', description: 'Three agents for UI' },
+              { name: 'ui-harness', description: 'UI harness fixture' },
               { name: 'video-tests', description: 'E2E video recording' },
               { name: 'ui-plan', description: 'Static plan preview' },
             ],
@@ -90,7 +90,7 @@ describe('mcpSearch', () => {
     const result = await mcpSearch({ cwd, query: 'ui' });
     expect(result.message).toBeUndefined();
     expect(result.matches.map((m) => m.name)).toEqual(
-      expect.arrayContaining(['ui-harness-trio', 'ui-plan']),
+      expect.arrayContaining(['ui-harness', 'ui-plan']),
     );
     expect(result.matches.find((m) => m.name === 'video-tests')).toBeUndefined();
   });

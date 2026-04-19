@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.22] - 2026-04-19
+
+### Added
+- `taskflow add <user/repo>` now auto-discovers harnesses across the repo. When multiple files match, prompts a multi-select via `@clack/prompts`; with a single match, auto-installs. Discovery skipped if a `registry-item.json` is present at HEAD.
+- `taskflow search <query>` folds GitHub-wide discovery results alongside configured-registry matches.
+- New Cloudflare Pages Function backend at `web/functions/api/discover.ts`. Calls grep.app through Cloudflare Browser Rendering (no cron, per-request browser). Falls back to GitHub Code Search API on error. Results cached 10 minutes in Workers KV.
+- `TASKFLOW_DISCOVER_URL` env var overrides the default proxy endpoint.
+
+### Changed
+- Registry deploy artifact moved from `registry/r/` to `web/public/` (Pages project layout). `taskflow build`'s default output (`./r`) is unchanged.
+
+### Internal
+- `cli/add/registry/discover.ts`, `synthesize.ts` — new CLI-side modules.
+- `web/wrangler.toml`, `web/tsconfig.json`, `web/package.json` — new Pages project config.
+- Pipeline and resolver accept an optional `{yes, silent, cwd}` argument to support interactive prompts.
+
 ## [0.1.21] - 2026-04-19
 
 ### Docs

@@ -1,0 +1,14 @@
+name = "taskflow-registry"
+compatibility_date = "2026-04-19"
+pages_build_output_dir = "public"
+
+[[kv_namespaces]]
+binding = "DISCOVER_CACHE"
+id = "REPLACE_AFTER_CREATE"   # wrangler kv namespace create taskflow-discover
+
+[browser]
+binding = "BROWSER"
+
+[vars]
+DEFAULT_QUERY_PATTERN = "from '@taskflow-corp/cli'"
+# GITHUB_TOKEN provided as a secret via `wrangler secret put GITHUB_TOKEN`, not here.

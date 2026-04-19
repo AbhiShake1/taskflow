@@ -35,7 +35,7 @@ Shadcn-style distribution: drop any harness into any project with a single comma
 ```sh
 # 1. Bare name — built-in @taskflow registry
 #    resolves against TASKFLOW_REGISTRY_URL (default https://taskflow.sh/r/{name}.json)
-npx @taskflow-corp/cli@latest add ui-harness-trio
+npx @taskflow-corp/cli@latest add example-hello
 
 # 2. Namespaced — @ns/name, looked up in taskflow.json `registries` map
 npx @taskflow-corp/cli@latest add @acme/e2e-video-tests
@@ -83,7 +83,7 @@ Every form resolves to: fetch → validate (Zod) → write files → patch `.age
 ### Multiple sources in one call
 
 ```sh
-npx @taskflow-corp/cli@latest add ui-harness-trio @acme/video-tests ./local.json
+npx @taskflow-corp/cli@latest add example-hello @acme/video-tests ./local.json
 ```
 
 `registryDependencies` from each item are resolved transitively (BFS + Kahn topo sort with cycle tolerance), so one command can pull a whole dependency graph.
@@ -96,7 +96,7 @@ npx @taskflow-corp/cli@latest add ui-harness-trio @acme/video-tests ./local.json
 | `taskflow add <source...>` | Install one or more harnesses |
 | `taskflow view <source>` | Print the resolved registry-item JSON (no write, no install) |
 | `taskflow list` | List installed harnesses from `taskflow.lock` |
-| `taskflow search <query>` | Fuzzy-match against the public registries index |
+| `taskflow search <query>` | Fuzzy-match local registries + auto-discover taskflow harnesses on GitHub |
 | `taskflow update [name...]` | Re-resolve; rewrite files + lockfile (`--all` implied if no names) |
 | `taskflow remove <name>` | Delete installed files + lockfile entry |
 | `taskflow apply <preset>` | `add --overwrite` alias (shadcn-style re-skin) |
@@ -211,6 +211,46 @@ project/
 
 See `registry/` in this repo for a worked example.
 
+### Auto-discovery — zero-config installs from any GitHub repo
+
+Typing `taskflow add <user>/<repo>` with no subpath and no `registry-item.json` at the repo root now triggers **auto-discovery**: the CLI searches the target repo for files that look like taskflow harnesses (i.e. import `@taskflow-corp/cli` / `taskflow-cli` / `taskflowjs` / `taskflow-sdk` and top-level-call `taskflow(...).run(...)`), then prompts a multi-select so you pick exactly which harnesses to install.
+
+```sh
+$ npx @taskflow-corp/cli@latest add AbhiShake1/taskflow
+
+◇  Discovered 4 taskflow harnesses in AbhiShake1/taskflow:
+
+◇  Select harnesses to install: (space to toggle, enter to confirm)
+   ◼  examples/ui-plan.ts        (matched: import from '@taskflow-corp/cli')
+   ◻  examples/ui-execute.ts
+   ◼  examples/ui-harness-trio/index.ts
+   ◻  harness/self-evolve.ts
+
+◇  Installing 2 harnesses…
+   ✔ .agents/taskflow/harness/ui-plan.ts
+   ✔ .agents/taskflow/harness/index.ts
+✔  Done. 2 written, 0 skipped, 0 overwritten.
+```
+
+Rules:
+- **0 matches** → error with a clear message ("no taskflow harnesses found in `<repo>`").
+- **1 match** → auto-install, no prompt.
+- **>1 matches** → interactive `@clack/prompts` `multiselect`. Default nothing selected; pick what you want.
+- **`--yes` with >1 matches** → **errors** ("multiple harnesses found; re-run without `--yes`, or pass the full path e.g. `user/repo/path/file.ts` to target one file"). Auto-discovery never silently installs everything just because `--yes` was passed.
+
+If the target repo ships a `registry-item.json` at HEAD on the default branch, the original Tier 2 shortcut behaviour wins (fetch the registry item directly) and discovery is skipped. If you type the full path (`user/repo/sub/path.ts`), the tarball-fetch path is used and discovery is also skipped.
+
+**How it works.** The CLI hits a small Cloudflare Pages Function (`/api/discover`) which uses Cloudflare Browser Rendering to call grep.app on demand (no polling, no cron — per-request headless browser). Results are cached 10 minutes in Workers KV. On any grep.app error the Function transparently falls back to the **GitHub Code Search API** so discovery stays up during rate limits or outages. Set `TASKFLOW_DISCOVER_URL` to point the CLI at a private proxy (useful for enterprise mirrors or local `wrangler pages dev`):
+
+```sh
+TASKFLOW_DISCOVER_URL=https://my-proxy.example.com/api/discover \
+  npx @taskflow-corp/cli@latest add AbhiShake1/taskflow
+```
+
+**`taskflow search` uses discovery too.** Results from a `taskflow search <query>` now fold GitHub-wide discovery hits in alongside the configured-registry fuzzy-matches, so you can grep the whole GitHub index for a harness by keyword without targeting a specific repo.
+
+Full design notes for discovery live in [docs/add-command-plan.md §15](./docs/add-command-plan.md#15-auto-discovery).
+
 ### Item types (`registry-item.json` → `type`)
 
 | Type | Default destination | Notes |
@@ -231,7 +271,7 @@ npx @taskflow-corp/cli@latest mcp
 
 Exposes three tools over stdio:
 - `list_harnesses` — return installed harnesses from `taskflow.lock`
-- `search` — fuzzy-match the public registries index
+- `search` — fuzzy-match local registries + GitHub-wide auto-discovery
 - `install` — delegate to `runAdd`
 
 Wire it into your MCP client config and the model can discover and install harnesses autonomously.
@@ -301,7 +341,16 @@ declare module '@taskflow-corp/cli/core' {
 }
 ```
 
-See [`examples/omai-plugin-starter/`](./examples/omai-plugin-starter/) for a fuller scaffold (screen capture + UI-TARS wiring stubs).
+## Examples
+
+Single-file harnesses live in `examples/`. Install the SDK globally first (`npm i -g @taskflow-corp/sdk`), then run any file directly with `tsx`:
+
+- `examples/ui-plan.ts` — scans a project, injects missing `data-testid`s, emits a YAML test plan.
+- `examples/ui-execute.ts` — consumes the YAML and generates a standalone Playwright project.
+- `examples/ui-execute.test.ts` — unit tests for the YAML → Playwright codegen.
+- `examples/ui-content.ts` — stitches media into a video, generates narratives, and publishes to YouTube / Facebook / Instagram / LinkedIn / Twitter / Medium / Reddit (stubs — swap in real OAuth before production).
+
+Each is ~400–600 LOC with zero build step: `tsx examples/ui-plan.ts`.
 
 ## Environment variables
 

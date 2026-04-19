@@ -47,7 +47,11 @@ export async function runAdd(opts: AddPipelineOptions): Promise<AddPipelineResul
   if (opts.view === true) {
     try {
       const json = await loadTaskflowJson(opts.cwd);
-      const resolved = await fetchRegistryItems(opts.inputs, json);
+      const resolved = await fetchRegistryItems(opts.inputs, json, {
+        yes: opts.yes,
+        silent: opts.silent,
+        cwd: opts.cwd,
+      });
       for (const r of resolved) {
         process.stdout.write(`${JSON.stringify(r.item, null, 2)}\n`);
       }
@@ -73,7 +77,11 @@ export async function runAdd(opts: AddPipelineOptions): Promise<AddPipelineResul
     });
     let mergedJson: TaskflowJson = initial.json;
 
-    const probe = await fetchRegistryItems([opts.inputs[0]], mergedJson);
+    const probe = await fetchRegistryItems([opts.inputs[0]], mergedJson, {
+      yes: opts.yes,
+      silent: opts.silent,
+      cwd: opts.cwd,
+    });
     const probeIsUniversal =
       probe.length > 0 &&
       (isUniversalFileType(probe[0].item.type) ||
@@ -97,7 +105,11 @@ export async function runAdd(opts: AddPipelineOptions): Promise<AddPipelineResul
     });
     mergedJson = persisted.json;
 
-    const resolved = await resolveRegistryTree(opts.inputs, mergedJson);
+    const resolved = await resolveRegistryTree(opts.inputs, mergedJson, {
+      yes: opts.yes,
+      silent: opts.silent,
+      cwd: opts.cwd,
+    });
 
     if (opts.frozen) {
       const lock = await lockfileHandle(opts.cwd).read();
