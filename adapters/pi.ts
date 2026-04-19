@@ -168,8 +168,10 @@ const piAdapter: AgentAdapter = {
         let msg: PiMsg;
         try {
           msg = JSON.parse(line) as PiMsg;
-        } catch {
-          ch.push({ t: 'error', leafId, error: `malformed json: ${line}`, ts: Date.now() });
+        } catch (parseErr) {
+          const snippet = line.length > 200 ? line.slice(0, 200) + '…' : line;
+          const detail = parseErr instanceof SyntaxError ? `: ${parseErr.message}` : '';
+          ch.push({ t: 'error', leafId, error: `malformed json${detail}: ${snippet}`, ts: Date.now() });
           return;
         }
         handlePiMsg(msg);
