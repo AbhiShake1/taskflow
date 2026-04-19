@@ -571,4 +571,79 @@ describe('claude-code adapter', () => {
     expect(resEv!.name).toBe('tool');
     expect(resEv!.result).toBe('some output');
   });
+
+  it('emits error event from SDKResultMessage when errors array is populated', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'result',
+      subtype: 'error',
+      duration_ms: 1,
+      duration_api_ms: 0,
+      is_error: true,
+      num_turns: 1,
+      result: '',
+      session_id: 's1',
+      total_cost_usd: 0,
+      errors: ['first error', 'second error'],
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const errEv = events.find(e => e.t === 'error') as Extract<AgentEvent, { t: 'error' }> | undefined;
+    expect(errEv).toBeDefined();
+    expect(errEv!.error).toBe('first error; second error');
+  });
+
+  it('emits error event from SDKResultMessage using subtype when errors array is absent', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'result',
+      subtype: 'timeout',
+      duration_ms: 1,
+      duration_api_ms: 0,
+      is_error: true,
+      num_turns: 1,
+      result: '',
+      session_id: 's1',
+      total_cost_usd: 0,
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const errEv = events.find(e => e.t === 'error') as Extract<AgentEvent, { t: 'error' }> | undefined;
+    expect(errEv).toBeDefined();
+    expect(errEv!.error).toBe('timeout');
+  });
+
+  it('emits error event from SDKResultMessage with fallback text when errors and subtype are absent', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'result',
+      duration_ms: 1,
+      duration_api_ms: 0,
+      is_error: true,
+      num_turns: 1,
+      result: '',
+      session_id: 's1',
+      total_cost_usd: 0,
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const errEv = events.find(e => e.t === 'error') as Extract<AgentEvent, { t: 'error' }> | undefined;
+    expect(errEv).toBeDefined();
+    expect(errEv!.error).toBe('unknown error');
+  });
 });
