@@ -11,7 +11,7 @@ export function claimsOverlap(a: string[] = [], b: string[] = []): boolean {
   return false;
 }
 
-function firstOverlappingPair(a: string[] = [], b: string[] = []): [string, string] | null {
+export function firstOverlappingPair(a: string[] = [], b: string[] = []): [string, string] | null {
   for (const ga of a) for (const gb of b) {
     const pa = literalPrefix(ga), pb = literalPrefix(gb);
     if (pa.startsWith(pb) || pb.startsWith(pa)) return [ga, gb];

@@ -8,9 +8,10 @@ import type {
   LeafSpec,
   LeafStatus,
   LeafSummary,
+  Manifest,
   RunEvent,
 } from './types';
-import { claimsOverlap } from './claims';
+import { claimsOverlap, firstOverlappingPair } from './claims';
 import { EventBus } from './events';
 import { resolveAdapter, type AgentAdapter, type AgentHandle, type SpawnCtx } from '../adapters/index';
 import { getRunner } from '../runner/context';
@@ -35,16 +36,6 @@ export type HarnessOptions = {
   runId?: string;
   runsDir?: string;
   adapterOverride?: (agent: AgentName) => Promise<AgentAdapter>;
-};
-
-export type Manifest = {
-  name: string;
-  runId: string;
-  startedAt: number;
-  endedAt: number;
-  exitCode: number;
-  leaves: LeafSummary[];
-  stages: string[];
 };
 
 function defaultRunId(): string {
@@ -333,8 +324,9 @@ function checkClaimConflicts(h: Ctx, spec: LeafSpec): void {
   const mine = spec.claims ?? [];
   if (mine.length === 0) return;
   for (const [otherId, other] of h._activeClaims) {
-    if (claimsOverlap(mine, other)) {
-      throw new Error(`claim conflict: "${spec.id}" vs "${otherId}"`);
+    const pair = firstOverlappingPair(mine, other);
+    if (pair) {
+      throw new Error(`claim conflict: "${spec.id}" vs "${otherId}" — write glob "${pair[0]}" overlaps "${pair[1]}"`);
     }
   }
 }
@@ -1093,7 +1085,7 @@ export async function parallel(h: Ctx, fns: Array<() => Promise<unknown>>): Prom
   }
 }
 
-export type { Ctx, LeafSpec, LeafResult } from './types';
+export type { Ctx, LeafSpec, LeafResult, Manifest } from './types';
 
 export async function _ensureRunDir(runDir: string): Promise<void> {
   await mkdir(runDir, { recursive: true });
