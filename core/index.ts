@@ -982,7 +982,7 @@ export async function leaf(h: Ctx, spec: LeafSpec): Promise<LeafResult> {
     await todoStore.flush();
 
     if (result.status !== 'done') {
-      throw new Error(`leaf failed: ${workingSpec.id}${result.error ? `: ${result.error}` : ''}`);
+      throw new Error(`leaf failed: ${workingSpec.id} (${result.status})${result.error ? `: ${result.error}` : ''}`);
     }
 
     return { ...result, proofPath };
