@@ -47,47 +47,66 @@ async function main(): Promise<void> {
   const fh = await open(eventsPath, 'r');
   let position = 0;
   let buffered = '';
+  let draining = false;
+  let redrainAfter = false;
 
   async function drain(): Promise<void> {
-    const stat = await fh.stat();
-    if (stat.size <= position) return;
-    const buf = Buffer.alloc(stat.size - position);
-    await fh.read(buf, 0, buf.length, position);
-    position = stat.size;
-    buffered += buf.toString('utf8');
-    const lines = buffered.split('\n');
-    buffered = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const ev = JSON.parse(trimmed) as RunEvent;
-        bus.publish(ev);
-      } catch {
-        // skip malformed
+    // Coalesce concurrent drain triggers — a single pass always sees up to
+    // the current file size, so fs.watch firing while drain is in-flight can
+    // be collapsed into a single follow-up read.
+    if (draining) { redrainAfter = true; return; }
+    draining = true;
+    try {
+      const stat = await fh.stat();
+      if (stat.size > position) {
+        const buf = Buffer.alloc(stat.size - position);
+        await fh.read(buf, 0, buf.length, position);
+        position = stat.size;
+        buffered += buf.toString('utf8');
+        const lines = buffered.split('\n');
+        buffered = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const ev = JSON.parse(trimmed) as RunEvent;
+            bus.publish(ev);
+          } catch {
+            // skip malformed
+          }
+        }
       }
+    } finally {
+      draining = false;
+      if (redrainAfter) { redrainAfter = false; void drain(); }
     }
   }
 
-  await drain();
-
-  const watcher = watch(eventsPath, { persistent: true }, () => {
-    drain().catch(() => {});
-  });
-
-  // mountTui's typed EventBus is more specific than what we duck-type with;
-  // at runtime mountTui only consumes subscribe(), so the cast is safe.
+  // CRITICAL: mount the TUI BEFORE draining. mountTui subscribes the store to
+  // the bus inside its call; publishing events to a bus with no subscribers
+  // (as we did before) dropped the entire backfill on the floor.
   const unmount = mountTui(bus as unknown as Parameters<typeof mountTui>[0], {
     onQuit: () => {
       watcher.close();
+      pollInterval && clearInterval(pollInterval);
       fh.close().catch(() => {});
       unmount();
       process.exit(0);
     },
   });
 
-  // Keep alive even if no terminal events
-  setInterval(() => {}, 1 << 30);
+  // Backfill every event already in the file. Subscribers are live now, so
+  // the TUI's first render will include the full current state.
+  await drain();
+
+  // Tail for new appends. fs.watch is flaky on macOS for continuous append
+  // workloads, so we also poll at 200ms as a belt-and-suspenders safety net.
+  // drain() coalesces concurrent triggers, so the two sources cost only what
+  // one would.
+  const watcher = watch(eventsPath, { persistent: true }, () => {
+    drain().catch(() => {});
+  });
+  const pollInterval = setInterval(() => { drain().catch(() => {}); }, 200);
 }
 
 main().catch((err) => {
