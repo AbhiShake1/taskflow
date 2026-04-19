@@ -147,7 +147,7 @@ async function main(): Promise<void> {
       if (alreadyDone.has(iter)) continue;
 
       try {
-        await phase(`iter-${iter}`, async () => {
+        await phase(`iter-${iter}`, async ({ setTitle }) => {
         const idea = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
@@ -171,6 +171,11 @@ async function main(): Promise<void> {
           schema: ImprovementIdea,
           timeoutMs: 360_000,
         }), `pick-${iter}`);
+
+        // Once we know what this cycle is about, rename the phase so the TUI
+        // shows the change summary instead of `iter-NN`. Lets the tree read
+        // like a live changelog.
+        setTitle(idea.summary);
 
         await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',

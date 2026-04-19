@@ -22,7 +22,10 @@ function stripCounter(id: string): string {
 }
 
 function nodeLabel(node: TreeNode): string {
-  const display = stripCounter(node.id);
+  // Prefer runtime-set title over the stripped id. Harnesses can call
+  // setTitle() from a phase body to give a cycle a meaningful label after
+  // the title is discovered (e.g. an AI-generated improvement summary).
+  const display = node.title ?? stripCounter(node.id);
   if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
     return `${display} (${node.childProgress.done}/${node.childProgress.total})`;
   }

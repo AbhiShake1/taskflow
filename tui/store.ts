@@ -24,6 +24,12 @@ export type TreeNode = {
    * Absent at runtime.
    */
   planHint?: string;
+  /**
+   * Runtime display title set via `stage-title` events. Overrides the id in
+   * the TUI label when present. Used by harnesses that discover a good name
+   * for a phase only after some work runs (e.g. AI-generated summaries).
+   */
+  title?: string;
 };
 
 export type TuiState = {
@@ -112,6 +118,11 @@ export function createTuiStore(
             rootIds = [...rootIds, ev.stageId];
           }
           stack = [...stack, ev.stageId];
+        } else if (ev.t === 'stage-title') {
+          const existing = nodes[ev.stageId];
+          if (existing) {
+            nodes[ev.stageId] = { ...existing, title: ev.title };
+          }
         } else if (ev.t === 'stage-exit') {
           const existing = nodes[ev.stageId];
           if (existing) {

@@ -97,8 +97,9 @@ export type AgentEvent =
   | { t: 'done';     leafId: string; result: LeafResult; ts: number };
 
 export type StageEvent =
-  | { t: 'stage-enter'; stageId: string; parentId?: string; ts: number }
-  | { t: 'stage-exit';  stageId: string; status: 'done' | 'error'; ts: number };
+  | { t: 'stage-enter'; stageId: string; parentId?: string; title?: string; ts: number }
+  | { t: 'stage-exit';  stageId: string; status: 'done' | 'error'; ts: number }
+  | { t: 'stage-title'; stageId: string; title: string; ts: number };
 
 export type RunEvent = AgentEvent | StageEvent;
 

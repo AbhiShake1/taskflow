@@ -108,12 +108,23 @@ export type SessionReturn<T extends SessionSpec<ZodTypeAny>> = T extends { schem
     : unknown
   : string;
 
+export interface PhaseCtx {
+  /**
+   * Update this phase's display title at runtime. Useful when the title
+   * isn't known until some work runs (e.g. an AI's improvement summary
+   * after a `pick` session). Updates propagate to live TUI viewers.
+   */
+  setTitle: (title: string) => void;
+}
+
 export interface RunCtx {
   /**
    * Wraps `engineStage()` around the provided async body. The body's return
    * value is returned verbatim, so phases are a pure pass-through for values.
+   * The body receives a `PhaseCtx` it can ignore (legacy `() => …` shape) or
+   * use to call `setTitle(...)` after some setup work.
    */
-  phase<T>(name: string, body: () => Promise<T>): Promise<T>;
+  phase<T>(name: string, body: (ctx: PhaseCtx) => Promise<T>): Promise<T>;
 
   /**
    * Invoke one agent session. Returns a promise that resolves to the LLM's
@@ -260,10 +271,10 @@ export function taskflow(name: string): TaskflowBuilder {
 
       return engineHarness(name, harnessOpts, async (h) => {
         const ctx: RunCtx = {
-          async phase<T>(phaseName: string, phaseBody: () => Promise<T>): Promise<T> {
+          async phase<T>(phaseName: string, phaseBody: (ctx: PhaseCtx) => Promise<T>): Promise<T> {
             let result!: T;
-            await engineStage(h, phaseName, async () => {
-              result = await phaseBody();
+            await engineStage(h, phaseName, async (stageCtx) => {
+              result = await phaseBody({ setTitle: stageCtx.setTitle });
             });
             return result;
           },

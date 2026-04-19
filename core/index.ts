@@ -218,7 +218,16 @@ export async function harness(
   return { ctx, manifest };
 }
 
-export async function stage(h: Ctx, id: string, body: () => Promise<void>): Promise<void> {
+export interface StageCtx {
+  /**
+   * Update this stage's display title at runtime. Useful when the title isn't
+   * known until after some work runs (e.g. the AI's improvement summary
+   * after a `pick` session). Emits a `stage-title` event the TUI ingests.
+   */
+  setTitle: (title: string) => void;
+}
+
+export async function stage(h: Ctx, id: string, body: (ctx: StageCtx) => Promise<void> | (() => Promise<void>)): Promise<void> {
   const parentId = h.stageStack[h.stageStack.length - 1];
   h.stageStack.push(id);
   h._stageOrder.push(id);
@@ -232,10 +241,19 @@ export async function stage(h: Ctx, id: string, body: () => Promise<void>): Prom
   }
   h.bus.publish({ t: 'stage-enter', stageId: id, parentId, ts: Date.now() });
 
+  const stageCtx: StageCtx = {
+    setTitle: (title: string) => {
+      h.bus.publish({ t: 'stage-title', stageId: id, title, ts: Date.now() });
+    },
+  };
+
   let status: 'done' | 'error' = 'done';
   let threw: unknown = undefined;
   try {
-    await body();
+    // The body's signature was historically `() => Promise<void>`. Passing a
+    // context arg is harmless to bodies that ignore it, so this stays
+    // backward compatible with every existing harness.
+    await (body as (ctx: StageCtx) => Promise<void>)(stageCtx);
   } catch (e) {
     status = 'error';
     threw = e;
