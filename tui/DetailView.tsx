@@ -1,12 +1,18 @@
 import React from 'react';
 import { basename } from 'node:path';
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import type { RunEvent } from '../core/types';
 import type { TuiState, TreeNode } from './store';
 
 export type DetailViewProps = {
   state: TuiState;
   leafId: string;
+  /**
+   * Live steer-input buffer from the parent App. Rendered inline inside the
+   * bordered steer box at the bottom so the user sees what they're typing.
+   * Defaults to '' when the parent doesn't wire it (e.g. plan mode preview).
+   */
+  steerBuffer?: string;
   onSteer?: (text: string) => void;
   onAbort?: () => void;
   onBack?: () => void;
@@ -170,17 +176,19 @@ function renderBlock(block: Block, key: number): React.ReactElement {
     case 'tool': {
       const argStr = formatToolArgs(block.ev.name, block.ev.args);
       const running = !block.res;
+      // Single <Text> wraps bullet + label so Ink can't collapse the space
+      // between sibling <Text> nodes (which it sometimes does in flex-row,
+      // producing "●ToolSearch" instead of "● ToolSearch").
       return (
         <Box key={key} flexDirection="column">
-          <Box>
-            <Text color="green" bold>● </Text>
-            <Text>{block.ev.name}</Text>
+          <Text>
+            <Text color="green" bold>●</Text>
+            {' '}
+            {block.ev.name}
             <Text dimColor>({argStr})</Text>
-          </Box>
+          </Text>
           {running ? (
-            <Box>
-              <Text color="cyan" dimColor>  ⎿ running…</Text>
-            </Box>
+            <Text color="cyan" dimColor>  ⎿ running…</Text>
           ) : (
             <ResultBody lines={resultLines(block.res!.result)} />
           )}
@@ -194,43 +202,47 @@ function renderBlock(block: Block, key: number): React.ReactElement {
       const firstLine = (block.ev.content ?? '').split('\n').find((l) => l.trim().length > 0) ?? '';
       const body = truncate(firstLine, 200);
       return (
-        <Box key={key}>
-          <Text color={color} bold>{label} </Text>
-          <Text>{body}</Text>
-        </Box>
+        <Text key={key}>
+          <Text color={color} bold>{label}</Text>
+          {' '}
+          {body}
+        </Text>
       );
     }
     case 'edit': {
       return (
-        <Box key={key}>
-          <Text color="yellow" bold>✎ </Text>
-          <Text>{basename(block.ev.file)}</Text>
+        <Text key={key}>
+          <Text color="yellow" bold>✎</Text>
+          {' '}
+          {basename(block.ev.file)}
           <Text dimColor> (+{block.ev.added} / -{block.ev.removed})</Text>
-        </Box>
+        </Text>
       );
     }
     case 'steer': {
       return (
-        <Box key={key}>
-          <Text color="magenta" bold>↻ </Text>
-          <Text>steer: </Text>
+        <Text key={key}>
+          <Text color="magenta" bold>↻</Text>
+          {' '}
+          steer:{' '}
           <Text dimColor>{truncate(block.ev.content, 180)}</Text>
-        </Box>
+        </Text>
       );
     }
     case 'error': {
       return (
-        <Box key={key}>
-          <Text color="red" bold>✗ </Text>
+        <Text key={key}>
+          <Text color="red" bold>✗</Text>
+          {' '}
           <Text color="red">{truncate(block.ev.error, 200)}</Text>
-        </Box>
+        </Text>
       );
     }
     case 'spawn': {
       return (
-        <Box key={key}>
-          <Text dimColor>● spawned {block.ev.agent}{block.ev.model ? `:${block.ev.model}` : ''}</Text>
-        </Box>
+        <Text key={key} dimColor>
+          ● spawned {block.ev.agent}{block.ev.model ? `:${block.ev.model}` : ''}
+        </Text>
       );
     }
     case 'done': {
@@ -240,10 +252,11 @@ function renderBlock(block: Block, key: number): React.ReactElement {
       const text = block.ev.result.finalAssistantText;
       return (
         <Box key={key} flexDirection="column">
-          <Box>
-            <Text color={color} bold>{glyph} </Text>
+          <Text>
+            <Text color={color} bold>{glyph}</Text>
+            {' '}
             <Text color={color}>done ({status})</Text>
-          </Box>
+          </Text>
           {text ? (
             <ResultBody lines={text.split('\n')} />
           ) : null}
@@ -253,8 +266,63 @@ function renderBlock(block: Block, key: number): React.ReactElement {
   }
 }
 
+// Renders the bottom steer-input box with claude-code styling: a rounded
+// cyan border, the leaf id rendered as a blue badge punched through the top
+// border, the live steer buffer with a block cursor, and the keybinding
+// hint embedded in the bottom border.
+function SteerBox({ leafId, steerBuffer }: { leafId: string; steerBuffer: string }): React.ReactElement {
+  const { stdout } = useStdout();
+  const cols = stdout && stdout.columns ? stdout.columns : 80;
+  const safeCols = Math.max(40, cols);
+
+  // Top border: ╭─ steer ──────[ leaf-id ]──╮
+  const leftLabel = ' steer ';
+  const badgeText = ` ${leafId} `;
+  const topFixedChars = 1 /*╭*/ + leftLabel.length + 1 /*[*/ + 1 /*]*/ + 1 /*╮*/ + badgeText.length;
+  const topFill = Math.max(2, safeCols - topFixedChars);
+  const leftFill = 2;
+  const rightFill = topFill - leftFill;
+
+  // Bottom border: ╰──────[ Esc back · ⌘K abort · ⌘R restart ]──╯
+  const hintLabel = '[ Esc back · ⌘K abort · ⌘R restart ]';
+  const botFixedChars = 1 /*╰*/ + 1 /*╯*/ + hintLabel.length;
+  const botFill = Math.max(2, safeCols - botFixedChars);
+  const botLeftFill = botFill - 2;
+  const botRightFill = 2;
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text color="cyan">╭</Text>
+        <Text color="cyan">{'─'.repeat(leftFill)}</Text>
+        <Text color="cyan">{leftLabel}</Text>
+        <Text color="cyan">{'─'.repeat(rightFill)}</Text>
+        <Text color="cyan">[</Text>
+        <Text backgroundColor="blue" color="white" bold>{badgeText}</Text>
+        <Text color="cyan">]</Text>
+        <Text color="cyan">╮</Text>
+      </Text>
+      <Text>
+        <Text color="cyan">│</Text>
+        <Text> </Text>
+        <Text color="cyan">›</Text>
+        <Text> </Text>
+        <Text>{steerBuffer}</Text>
+        <Text inverse> </Text>
+      </Text>
+      <Text>
+        <Text color="cyan">╰</Text>
+        <Text color="cyan">{'─'.repeat(botLeftFill)}</Text>
+        <Text dimColor>{hintLabel}</Text>
+        <Text color="cyan">{'─'.repeat(botRightFill)}</Text>
+        <Text color="cyan">╯</Text>
+      </Text>
+    </Box>
+  );
+}
+
 export function DetailView(props: DetailViewProps): React.ReactElement {
-  const { state, leafId } = props;
+  const { state, leafId, steerBuffer = '' } = props;
   const leaf = state.nodes[leafId];
 
   if (!leaf) {
@@ -292,10 +360,7 @@ export function DetailView(props: DetailViewProps): React.ReactElement {
       <Box flexDirection="column">
         {visible.map((b, i) => renderBlock(b, i))}
       </Box>
-      <Box marginTop={1}>
-        <Text>{'› steer: _              '}</Text>
-        <Text dimColor>[Esc back  ⌘K abort  ⌘R restart]</Text>
-      </Box>
+      <SteerBox leafId={leafId} steerBuffer={steerBuffer} />
     </Box>
   );
 }

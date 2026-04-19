@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-04-19
+
+### Changed
+- TUI DetailView: steer input is now actually typeable. Live `steerBuffer` from the parent App is rendered inside a rounded cyan-bordered box at the bottom of the view, with an inverse-block cursor. The leaf id is punched through the top border as a blue-background badge (claude-code-style); keybinding hint embedded in the bottom border.
+- TUI DetailView: bullet+label spacing fixed. Single `<Text>` wrapper around bullet + name prevents Ink from collapsing the inter-element space in flex-row, so `● ToolSearch` renders correctly instead of `●ToolSearch`.
+
 ## [0.1.8] - 2026-04-19
 
 ### Changed

@@ -91,6 +91,7 @@ function App(props: AppInnerProps): React.ReactElement {
         <DetailView
           state={state}
           leafId={state.focusedLeafId}
+          steerBuffer={steerBuffer}
           onSteer={text =>
             state.focusedLeafId && onSteer?.(state.focusedLeafId, text)
           }
