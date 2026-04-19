@@ -1,4 +1,4 @@
-import type { Plugin, PluginContribution } from 'taskflow-cli/core';
+import type { Plugin, PluginContribution } from '@taskflow-corp/cli/core';
 
 export interface OmaiOptions {
   uiTars?: { endpoint: string; apiKey?: string };
@@ -49,7 +49,7 @@ export function omaiTaskflow(opts: OmaiOptions = {}): Plugin {
   });
 }
 
-declare module 'taskflow-cli/core' {
+declare module '@taskflow-corp/cli/core' {
   interface PluginNamespaces {
     omai: OmaiApi;
   }
