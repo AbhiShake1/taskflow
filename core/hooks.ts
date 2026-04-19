@@ -1,5 +1,6 @@
 import type { AgentHandle } from '../adapters';
 import type { EventBus } from './events';
+import type { Plugin } from './plugin';
 import type { LeafResult, LeafSpec, RunEvent } from './types';
 
 export type HookName =
@@ -54,7 +55,7 @@ export interface ResolvedConfig {
   };
   hooks: { errorPolicy: 'swallow' | 'warn' | 'throw'; timeoutMs: number };
   events: HookHandlers;
-  plugins: unknown[];
+  plugins: Plugin[];
   scope?: string;
 }
 

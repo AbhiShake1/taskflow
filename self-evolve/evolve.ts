@@ -137,7 +137,7 @@ async function main(): Promise<void> {
     ? Math.max(...[...alreadyDone.keys()].map(Number)) + 1
     : 0;
 
-  await taskflow('self-evolve').run(async ({ session }) => {
+  await taskflow('self-evolve').run(async ({ phase, session }) => {
     const frameLog: string[] = [...alreadyDone.values()].sort();
     const failedIters: Array<{ iter: string; error: string }> = [];
 
@@ -147,6 +147,7 @@ async function main(): Promise<void> {
       if (alreadyDone.has(iter)) continue;
 
       try {
+        await phase(`iter-${iter}`, async () => {
         const idea = await withRetries((id) => session(id, {
           with: 'claude-code:sonnet',
           task: [
@@ -349,10 +350,10 @@ async function main(): Promise<void> {
           schema: CommitResult,
           timeoutMs: 180_000,
         }), `commit-${iter}`);
+        });
       } catch (err) {
         // One failed cycle shouldn't kill the harness. Log it, keep whatever
-        // frames/commits survived so far, and move on. The whole loop is
-        // intentionally one global iteration that resumes/retries forever.
+        // frames/commits survived so far, and move on.
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[cycle-${iter}] aborted: ${msg.slice(0, 300)}`);
         failedIters.push({ iter, error: msg.slice(0, 500) });
@@ -368,20 +369,22 @@ async function main(): Promise<void> {
     // In infinite mode (the default) the loop never exits — use the separate
     // `npm run stitch` script when you want a snapshot demo video.
     if (Number.isFinite(ITERATIONS) && frameLog.length > 0) {
-      await session('stitch-video', {
-        with: 'claude-code:sonnet',
-        task: [
-          `Stitch ${frameLog.length} captured frames into a single demo video.`,
-          '',
-          `Output: ${VIDEO_PATH}`,
-          '',
-          'Use ffmpeg. 1 second per frame, loop the last frame for +2 seconds, 30fps output.',
-          `  ffmpeg -y -framerate 1 -pattern_type glob -i '${FRAMES_DIR}/iter-*.png' -vf "format=yuv420p" -r 30 ${VIDEO_PATH}`,
-          '',
-          'Verify the output MP4 exists and is > 0 bytes.',
-        ].join('\n'),
-        write: [VIDEO_PATH],
-        timeoutMs: 300_000,
+      await phase('stitch-video', async () => {
+        await session('make-video', {
+          with: 'claude-code:sonnet',
+          task: [
+            `Stitch ${frameLog.length} captured frames into a single demo video.`,
+            '',
+            `Output: ${VIDEO_PATH}`,
+            '',
+            'Use ffmpeg. 1 second per frame, loop the last frame for +2 seconds, 30fps output.',
+            `  ffmpeg -y -framerate 1 -pattern_type glob -i '${FRAMES_DIR}/iter-*.png' -vf "format=yuv420p" -r 30 ${VIDEO_PATH}`,
+            '',
+            'Verify the output MP4 exists and is > 0 bytes.',
+          ].join('\n'),
+          write: [VIDEO_PATH],
+          timeoutMs: 300_000,
+        });
       });
     }
   }, { runsDir: resolve(REPO_ROOT, 'data', 'runs') });
