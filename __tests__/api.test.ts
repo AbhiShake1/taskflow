@@ -412,6 +412,25 @@ describe('async-await fluent API', () => {
     expect(manifest.leaves.every((l) => l.status === 'done')).toBe(true);
   });
 
+  it('session() with no finalAssistantText returns empty string', async () => {
+    // Adapter produces no finalAssistantText (tool-only session).
+    const adapter = makeScriptedAdapter({
+      toolonly: {},
+    });
+
+    let received: string | undefined;
+    await taskflow('tool-only').run(
+      async ({ phase, session }) => {
+        await phase('only', async () => {
+          received = await session('toolonly', { with: 'claude-code', task: 't' });
+        });
+      },
+      { runsDir, runId: 'tool-only', adapterOverride: async () => adapter },
+    );
+
+    expect(received).toBe('');
+  });
+
   it('structuredOutput.jsonSchema is derived from the zod schema and plumbed to the adapter', async () => {
     // Capture what the engine passed into SpawnCtx.structuredOutput to confirm
     // the zod→JSON-Schema conversion and _zodSchema pass-through both work.
