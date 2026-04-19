@@ -143,21 +143,21 @@ async function main(): Promise<void> {
           const tag = `${iter}-a${verifyAttempt}`;
           const [lint, format, tests] = await Promise.all([
             session(`lint-${tag}`, {
-              with: 'codex:gpt-5.4',
+              with: 'claude-code:sonnet',
               task: 'Run `npx tsc --noEmit` from the repo root. If there are errors, DO NOT fix them here — just report status=error with a concise summary of the errors (first 5 lines). If clean, status=ok.',
               dependsOn: [priorStep],
               schema: CmdResult,
               timeoutMs: 300_000,
             }),
             session(`format-${tag}`, {
-              with: 'codex:gpt-5.4',
+              with: 'claude-code:sonnet',
               task: 'Inspect package.json scripts for a formatter (biome, prettier, etc.). If none configured, return status=ok and summary="no formatter configured". If one exists, run it in check mode; return status=ok on clean or status=error with summary listing mis-formatted files.',
               dependsOn: [priorStep],
               schema: CmdResult,
               timeoutMs: 300_000,
             }),
             session(`test-${tag}`, {
-              with: 'codex:gpt-5.4',
+              with: 'claude-code:sonnet',
               task: 'Run `npx vitest run` from the repo root. Return status=ok when exit 0 (all passed/skipped), status=error otherwise, with counts.passed / counts.failed populated from the vitest summary.',
               dependsOn: [priorStep],
               schema: CmdResult,
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
         ].join('\n');
 
         await session(`commit-${iter}`, {
-          with: 'codex:gpt-5.4',
+          with: 'claude-code:sonnet',
           task: [
             `From ${REPO_ROOT}, stage and commit this iteration's work.`,
             '',
