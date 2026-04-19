@@ -1,20 +1,17 @@
-#!/usr/bin/env tsx
 /**
- * harness:run — executable entry that runs an emitted harness TS file under
- * a live EventBus, mounts the TUI (or a headless fallback), and wires
- * steering/abort keyboard events back to the adapter handles of in-flight
- * leaves via the runner context registry.
+ * harness:run — executable entry that runs a harness TS file under a live
+ * EventBus, mounts the TUI (or a headless fallback), and wires steering/
+ * abort keyboard events back to the adapter handles of in-flight leaves
+ * via the runner context registry.
  *
- * Usage:
- *   pnpm harness:run harness/__tests__/fixtures/single-leaf.ts
- *
- * The emitted module is a top-level `harness(...)` call. When it executes,
- * it consults getRunner() from ./context — so we register OUR bus/runsDir/
- * handle map first, then dynamic-import it.
+ * Used by both the in-repo dev script (`tsx runner/index.ts harness.ts`)
+ * and the published CLI (`taskflow run harness.ts`). The latter runs
+ * compiled JS under plain node — `jiti` handles the .ts harness file
+ * import without requiring tsx as a runtime dep.
  */
-import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { createJiti } from 'jiti';
 import { EventBus } from '../core/events';
 import { setRunner, type RunnerContext } from './context';
 import type { AgentAdapter, AgentHandle } from '../adapters/index';
@@ -126,11 +123,13 @@ async function main(): Promise<void> {
   process.on('SIGTERM', abortAll);
 
   try {
-    // Load the emitted harness module. Its top-level harness() call runs
-    // immediately, consulting our setRunner() registration for bus/runsDir.
-    await import(pathToFileURL(resolve(harnessPath)).href);
+    // Load the harness module via jiti so .ts files Just Work without tsx
+    // being installed (matters for the published CLI, where users invoke
+    // `taskflow run harness.ts` and we don't want a tsx peer dep).
+    const jiti = createJiti(import.meta.url, { interopDefault: true });
+    await jiti.import(resolve(harnessPath));
   } catch (err) {
-    console.error('harness error:', err);
+    console.error('harness error:', err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   } finally {
     unmount?.();
