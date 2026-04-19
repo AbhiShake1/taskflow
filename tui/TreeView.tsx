@@ -14,16 +14,6 @@ export type TreeViewProps = {
   tick?: number;
 };
 
-function depth(node: TreeNode, nodes: Record<string, TreeNode>): number {
-  let d = 0;
-  let cur: TreeNode | undefined = node;
-  while (cur?.parentId && nodes[cur.parentId]) {
-    d += 1;
-    cur = nodes[cur.parentId];
-  }
-  return d;
-}
-
 function nodeLabel(node: TreeNode): string {
   if (node.kind === 'stage' && node.childProgress && node.status !== 'plan') {
     return `${node.id} (${node.childProgress.done}/${node.childProgress.total})`;
@@ -42,6 +32,62 @@ function nodeTail(node: TreeNode): string {
   return parts.join('  ');
 }
 
+// Whether `node` is the last among its siblings (root-level nodes count
+// rootIds as siblings; other nodes look at their parent's children).
+function isLastSibling(
+  node: TreeNode,
+  nodes: Record<string, TreeNode>,
+  rootIds: string[],
+): boolean {
+  const sibs = node.parentId ? nodes[node.parentId]?.children ?? [] : rootIds;
+  return sibs[sibs.length - 1] === node.id;
+}
+
+// Build the Unicode box-drawing prefix for a node. For each ancestor the
+// prefix contributes either "│  " (ancestor has later siblings, so the line
+// continues underneath us) or "   " (ancestor was the last child of its own
+// parent, so the line has terminated). At the node's own level, the
+// connector is "└─ " for last-child or "├─ " for a mid-list child.
+function treePrefix(
+  node: TreeNode,
+  nodes: Record<string, TreeNode>,
+  rootIds: string[],
+): string {
+  const chain: TreeNode[] = [];
+  let cur: TreeNode | undefined = node;
+  while (cur?.parentId) {
+    const parent: TreeNode | undefined = nodes[cur.parentId];
+    if (!parent) break;
+    chain.unshift(parent);
+    cur = parent;
+  }
+  let prefix = '';
+  for (const anc of chain) {
+    prefix += isLastSibling(anc, nodes, rootIds) ? '   ' : '│  ';
+  }
+  // Root-level nodes have no parent — don't add a terminal connector, just
+  // show the node inline. Adds visual air and matches the common case of a
+  // single harness-root under which all the real tree lives.
+  if (!node.parentId) return '';
+  prefix += isLastSibling(node, nodes, rootIds) ? '└─ ' : '├─ ';
+  return prefix;
+}
+
+// Prefix used for the activity sub-line that hangs under a running leaf.
+// We want it aligned with the row's label, not its connector — so we replace
+// the node's own `├─ ` / `└─ ` with `│  ` / `   ` respectively.
+function subLinePrefix(
+  node: TreeNode,
+  nodes: Record<string, TreeNode>,
+  rootIds: string[],
+): string {
+  const base = treePrefix(node, nodes, rootIds);
+  if (base.length === 0) return '   ';
+  if (base.endsWith('├─ ')) return base.slice(0, -3) + '│  ';
+  if (base.endsWith('└─ ')) return base.slice(0, -3) + '   ';
+  return base;
+}
+
 export function TreeView({ state, hintText }: TreeViewProps): React.ReactElement {
   const flat = state.getFlatTree();
   const selectedIdx = Math.min(state.selectedIdx, Math.max(0, flat.length - 1));
@@ -50,26 +96,32 @@ export function TreeView({ state, hintText }: TreeViewProps): React.ReactElement
   return (
     <Box flexDirection="column">
       {flat.map((node, idx) => {
-        const d = depth(node, state.nodes);
-        const indent = '  '.repeat(d);
+        const prefix = treePrefix(node, state.nodes, state.rootIds);
         const glyph = liveStatusGlyph(node.status);
         const label = nodeLabel(node);
         const tail = nodeTail(node);
         const isSelected = idx === selectedIdx;
         const color = statusColor(node.status);
         const bold = node.status === 'running';
-        const dim = node.status === 'pending';
+        const dim = node.status === 'pending' || node.status === 'done';
+        const strike = node.status === 'done';
         const activity =
           node.status === 'running' && node.kind === 'leaf'
             ? latestActivity(node) ?? '⟳ waiting for first response'
             : undefined;
+        const subPrefix = activity ? subLinePrefix(node, state.nodes, state.rootIds) : '';
 
         return (
           <Box key={node.id} flexDirection="column">
             <Box flexDirection="row">
+              {prefix ? (
+                <Box>
+                  <Text dimColor>{prefix}</Text>
+                </Box>
+              ) : null}
               <Box>
-                <Text color={color} bold={bold} dimColor={dim} inverse={isSelected}>
-                  {`${indent}${glyph} ${label}`}
+                <Text color={color} bold={bold} dimColor={dim} strikethrough={strike} inverse={isSelected}>
+                  {`${glyph} ${label}`}
                 </Text>
               </Box>
               {tail ? (
@@ -79,8 +131,13 @@ export function TreeView({ state, hintText }: TreeViewProps): React.ReactElement
               ) : null}
             </Box>
             {activity ? (
-              <Box marginLeft={d * 2 + 4}>
-                <Text color="cyan" dimColor>{activity}</Text>
+              <Box flexDirection="row">
+                <Box>
+                  <Text dimColor>{subPrefix}</Text>
+                </Box>
+                <Box>
+                  <Text color="cyan" dimColor>{activity}</Text>
+                </Box>
               </Box>
             ) : null}
           </Box>
