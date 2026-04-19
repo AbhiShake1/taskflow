@@ -6,8 +6,10 @@ import {
 import { createInterface } from 'node:readline';
 import { EventChannel, type AgentAdapter, type AgentHandle, type SpawnCtx } from './index';
 import type { AgentEvent, LeafResult, LeafSpec, LeafStatus } from '../core/types';
-// TODO(taskflow): upgrade to pi/omp-native structured output when the CLI exposes
-// a schema flag. For now we use prompt-engineered fallback.
+// Structured output (2026-04): pi CLI has no native schema flag. The RPC mode
+// we use emits JSONL events but no schema-constrained output channel.
+// Tracking: badlogic/pi-mono#1086. Until then we use prompt-engineered JSON
+// via structured-output.ts.
 import { jsonBlockFromText, jsonFallbackPromptSuffix } from './structured-output';
 
 /**
@@ -355,6 +357,12 @@ const piAdapter: AgentAdapter = {
   },
 };
 
+/**
+ * Returns true when a tool name represents a file-edit or file-write operation.
+ * The allow-list covers camelCase, kebab-case, snake_case, and namespace-prefixed
+ * variants used by different agent protocols so the TUI can auto-synthesize an
+ * `edit` event for its diff view without requiring callers to normalize names first.
+ */
 function isEditTool(name: string): boolean {
   const n = name.toLowerCase();
   return (
@@ -369,6 +377,11 @@ function isEditTool(name: string): boolean {
   );
 }
 
+/**
+ * Returns the value of the first key in `keys` that maps to a non-empty string
+ * in `obj`. Used to normalize inconsistently named fields across agent protocols
+ * where the same logical field may appear under different names.
+ */
 function pickString(obj: Record<string, unknown>, keys: string[]): string | undefined {
   for (const k of keys) {
     const v = obj[k];
@@ -377,6 +390,11 @@ function pickString(obj: Record<string, unknown>, keys: string[]): string | unde
   return undefined;
 }
 
+/**
+ * Returns the value of the first key in `keys` that maps to a finite number
+ * in `obj`. Mirrors `pickString` for numeric fields with inconsistent naming
+ * across agent protocols.
+ */
 function pickNumber(obj: Record<string, unknown>, keys: string[]): number | undefined {
   for (const k of keys) {
     const v = obj[k];
