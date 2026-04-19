@@ -646,7 +646,7 @@ function parsePromiseAll(call: ts.CallExpression, ctx: WalkCtx): PlanPhase | Pla
 interface ReadLiteral {
   with?: string;
   task?: string;
-  write?: unknown[];
+  write?: string[];
   timeoutMs?: number;
   rulesPrefix?: boolean;
   _schemaNode?: ts.Expression;
