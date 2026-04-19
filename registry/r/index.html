@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>taskflow — registry</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 44rem; margin: 3rem auto; padding: 0 1.25rem; }
+      code { background: rgba(127,127,127,.12); padding: .08rem .32rem; border-radius: 3px; }
+      pre { background: rgba(127,127,127,.08); padding: .9rem 1.1rem; border-radius: 6px; overflow-x: auto; }
+      a { color: currentColor; }
+      h1 { font-size: 1.2rem; margin-top: 0; }
+      h2 { font-size: 1rem; margin-top: 2rem; }
+    </style>
+  </head>
+  <body>
+    <h1>taskflow registry</h1>
+    <p>
+      Built-in registry for
+      <a href="https://www.npmjs.com/package/@taskflow-corp/cli"><code>@taskflow-corp/cli</code></a>
+      (shadcn-style harness distribution for multi-agent pipelines).
+    </p>
+
+    <h2>install a harness</h2>
+    <pre>npx @taskflow-corp/cli@latest add &lt;name&gt;</pre>
+
+    <h2>endpoints</h2>
+    <ul>
+      <li><a href="./registry.json"><code>/registry.json</code></a> — this namespace's item list</li>
+      <li><a href="./registries.json"><code>/registries.json</code></a> — master index of public namespaces</li>
+      <li><code>/&lt;name&gt;.json</code> — a single registry item (e.g. <a href="./example-hello.json"><code>/example-hello.json</code></a>)</li>
+    </ul>
+
+    <h2>docs</h2>
+    <ul>
+      <li><a href="https://github.com/AbhiShake1/taskflow#install-harnesses-from-anywhere--taskflow-add">README usage guide</a></li>
+      <li><a href="https://github.com/AbhiShake1/taskflow/blob/main/docs/add-command-plan.md">design notes</a></li>
+    </ul>
+  </body>
+</html>

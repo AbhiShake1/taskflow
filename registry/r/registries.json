@@ -1,0 +1,5 @@
+{
+  "$schema": "https://taskflow.sh/schema/registries.json",
+  "description": "Master index of publicly-known taskflow registry namespaces. Consumed by `taskflow add` for auto-discovery of unregistered @namespaces.",
+  "registries": {}
+}
