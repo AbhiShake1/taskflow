@@ -18,14 +18,16 @@
     "adapters/**/*.ts",
     "runner/**/*.ts",
     "tui/**/*.ts",
-    "tui/**/*.tsx"
+    "tui/**/*.tsx",
+    "plan/**/*.ts",
+    "plan/**/*.tsx",
+    "cli/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
     "__tests__/**",
     "tasks/**",
-    "data/**",
-    "plan/**"
+    "data/**"
   ]
 }

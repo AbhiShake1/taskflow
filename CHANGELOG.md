@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-04-19
+
+### Added
+- `taskflow` CLI published as the package's `bin`. Subcommands:
+  - `taskflow run harness.ts` — execute a harness file; mounts live TUI when stdout is a TTY, otherwise streams events as JSONL.
+  - `taskflow watch harness.ts` — alias for `run`.
+  - `taskflow plan harness.ts` — static AST preview (no LLM calls).
+  Consumers no longer need a per-harness `package.json` scaffold. Write a single `.ts` file anywhere and run it via `npx taskflow run harness/foo.ts`.
+- Runner now imports harness files via `jiti` instead of native `import()`, so `.ts` files work under plain node (no tsx peer dep required by the published CLI).
+
 ## [0.1.13] - 2026-04-19
 
 ### Added
