@@ -409,8 +409,7 @@ CLI (cli/add/registry/discover.ts)
   └─► HTTP GET ${TASKFLOW_DISCOVER_URL:-https://<pages>/api/discover}?repo=<u/r>&q=<...>&limit=25
         └─► Cloudflare Pages Function (web/functions/api/discover.ts)
               ├─ KV cache hit (10 min) → return { source: 'cache', hits }
-              ├─ Browser Rendering (@cloudflare/puppeteer) → grep.app/search XHR → { source: 'grep.app', hits }
-              └─ fallback: GitHub Code Search API (bearer PAT) → { source: 'github', hits }
+              └─ GitHub Code Search API (bearer PAT) → { source: 'github', hits }
         ◄── 200 { source, hits: [{ repo, branch, path, sha, matchLines, url, rawUrl }] }
 
 CLI (cli/add/registry/synthesize.ts)
@@ -423,8 +422,7 @@ See the overall design context in `.claude/plans/curious-wobbling-stearns.md`.
 
 **Decision log.**
 
-- **grep.app vs GitHub Code Search as primary.** grep.app (10) is ~10× faster and returns full-file-context matches; GitHub Code Search (6) rate-limits aggressively at 10 req/min unauthenticated and its snippet shape is less useful. Pick **grep.app as primary, GitHub Code Search as fallback**. Falling back, not erroring, keeps the flow up during upstream issues.
-- **Cloudflare Browser Rendering vs scheduled cookie-refresh worker.** grep.app sits behind Vercel's bot challenge (`x-vercel-mitigated: challenge`, 429 on non-browser UA). Options: (a) scheduled worker that refreshes a cookie into KV every N min (7, polling — explicitly out of scope per §15 goal), (b) Cloudflare Browser Rendering per request (9, on-demand headless browser, no polling), (c) paid scraping API (5, extra vendor). Pick **(b) Browser Rendering**. Cold-start ~2s, warm ~500ms. Per-request KV cache (10 min) absorbs bursts.
+- **grep.app vs GitHub Code Search (revised in 0.1.23).** Initial design layered Cloudflare Browser Rendering on top of grep.app for ~10× speed. Shipped in 0.1.22 and immediately simplified: Browser Rendering added a heavy dependency, $0.0001/req + compute cost, 500-2000 ms cold-start, and fragility around grep.app's Vercel challenge. GitHub Code Search is ~500-1500 ms, has an authenticated 30 req/min ceiling, zero moving parts, and sits behind one `fetch()` call. Pick **GitHub Code Search as the sole backend**. If grep.app later publishes an API key program we add them back as a two-line branch — the CLI surface doesn't change.
 - **Synthesis: regex vs AST.** Full ts-morph AST would eliminate false positives but doubles CLI cold-start time for every discovered file. Pick **regex-based validator** for v1 (imports + `taskflow(...)` call + path-not-test-or-config). False-positive risk is low because we only match files that import the taskflow package in the first place. Tighten with AST later if noise shows up.
 - **`--yes` with >1 hits → error, not auto-install.** Score: auto-install everything (3, surprising), install first hit (4, arbitrary), error with actionable hint (9, safe). Pick **error**. `taskflow add` already walks public GitHub code; silently installing N files a user never saw is a step too far.
 - **Results cached 10 min in Workers KV.** Long enough to absorb `add` + re-run retries, short enough that a freshly-pushed harness is discoverable within the same coffee break.

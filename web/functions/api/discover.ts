@@ -1,37 +1,19 @@
-/**
- * Cloudflare Pages Function — `/api/discover`.
- *
- * GET /api/discover?q=<query>&repo=<user/repo>&limit=25
- *
- * Flow:
- *   1. Cache (KV, 10m TTL) keyed by sha256(q|repo|limit).
- *   2. Try grep.app via Browser Rendering (solves the Vercel challenge).
- *   3. Fall back to GitHub Code Search (api.github.com/search/code).
- *   4. Both fail → 503.
- *
- * Pure response normalizers live in `./normalize.ts` so unit tests can import
- * them without pulling in the `@cloudflare/puppeteer` runtime dependency.
- */
-import puppeteer from '@cloudflare/puppeteer';
-
-import { normalizeGitHub, normalizeGrepApp, type DiscoverHit } from './normalize';
+import { normalizeGitHub, type DiscoverHit } from './normalize';
 
 export type { DiscoverHit } from './normalize';
 
 export interface Env {
-  BROWSER: Fetcher;
   DISCOVER_CACHE: KVNamespace;
   GITHUB_TOKEN?: string;
   DEFAULT_QUERY_PATTERN?: string;
 }
 
 export interface DiscoverResponse {
-  source: 'grep.app' | 'github' | 'cache';
+  source: 'github' | 'cache';
   hits: DiscoverHit[];
 }
 
-const CACHE_TTL_SECONDS = 600; // 10 minutes
-const GREP_APP_TIMEOUT_MS = 10_000;
+const CACHE_TTL_SECONDS = 600;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
@@ -46,7 +28,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   const cacheKey = await sha256(`${q}|${repo ?? ''}|${limit}`);
 
-  // 1. KV cache.
   try {
     const cached = await env.DISCOVER_CACHE.get(cacheKey, 'json');
     if (cached && Array.isArray((cached as { hits?: unknown }).hits)) {
@@ -57,21 +38,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     // KV errors are non-fatal — fall through to a live fetch.
   }
 
-  // 2. grep.app via Browser Rendering.
-  try {
-    const hits = await fetchGrepApp(env, q, repo);
-    if (hits.length > 0) {
-      const limited = hits.slice(0, limit);
-      void env.DISCOVER_CACHE
-        .put(cacheKey, JSON.stringify({ hits: limited }), { expirationTtl: CACHE_TTL_SECONDS })
-        .catch(() => {});
-      return json<DiscoverResponse>({ source: 'grep.app', hits: limited });
-    }
-  } catch (error) {
-    console.warn('[discover] grep.app failed:', String(error));
-  }
-
-  // 3. GitHub Code Search fallback.
   try {
     const result = await fetchGitHub(env, q, repo, limit);
     if (result.kind === 'rate_limited') {
@@ -86,27 +52,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     return json({ error: 'discover_unavailable', detail: String(error) }, 503);
   }
 };
-
-async function fetchGrepApp(env: Env, q: string, repo: string | null): Promise<DiscoverHit[]> {
-  const browser = await puppeteer.launch(env.BROWSER);
-  try {
-    const page = await browser.newPage();
-    const filter = repo ? `&filter[repo][0]=${encodeURIComponent(repo)}` : '';
-    const searchUrl = `https://grep.app/search?q=${encodeURIComponent(q)}${filter}`;
-    const [xhr] = await Promise.all([
-      page.waitForResponse(
-        (r: { url(): string; status(): number }) =>
-          r.url().includes('grep.app/api/search') && r.status() === 200,
-        { timeout: GREP_APP_TIMEOUT_MS },
-      ),
-      page.goto(searchUrl, { waitUntil: 'networkidle0', timeout: GREP_APP_TIMEOUT_MS }),
-    ]);
-    const raw = (await xhr.json()) as unknown;
-    return normalizeGrepApp(raw);
-  } finally {
-    await browser.close();
-  }
-}
 
 type FetchGitHubResult =
   | { kind: 'ok'; hits: DiscoverHit[] }

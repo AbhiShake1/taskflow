@@ -240,7 +240,7 @@ Rules:
 
 If the target repo ships a `registry-item.json` at HEAD on the default branch, the original Tier 2 shortcut behaviour wins (fetch the registry item directly) and discovery is skipped. If you type the full path (`user/repo/sub/path.ts`), the tarball-fetch path is used and discovery is also skipped.
 
-**How it works.** The CLI hits a small Cloudflare Pages Function (`/api/discover`) which uses Cloudflare Browser Rendering to call grep.app on demand (no polling, no cron — per-request headless browser). Results are cached 10 minutes in Workers KV. On any grep.app error the Function transparently falls back to the **GitHub Code Search API** so discovery stays up during rate limits or outages. Set `TASKFLOW_DISCOVER_URL` to point the CLI at a private proxy (useful for enterprise mirrors or local `wrangler pages dev`):
+**How it works.** The CLI hits a small Cloudflare Pages Function (`/api/discover`) which calls the official **GitHub Code Search REST API**. Results are cached 10 minutes in Workers KV. Sub-second end-to-end, no headless browsers, no cookie juggling — just a plain server-to-server fetch. Set `TASKFLOW_DISCOVER_URL` to point the CLI at a private proxy (useful for enterprise mirrors or local `wrangler pages dev`):
 
 ```sh
 TASKFLOW_DISCOVER_URL=https://my-proxy.example.com/api/discover \

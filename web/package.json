@@ -7,7 +7,6 @@
     "deploy": "wrangler pages deploy public"
   },
   "devDependencies": {
-    "@cloudflare/puppeteer": "^1.0.4",
     "@cloudflare/workers-types": "^4.20250419.0",
     "wrangler": "^4.0.0",
     "typescript": "^5.9.3"

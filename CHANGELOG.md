@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.23] - 2026-04-19
+
+### Changed
+- **Simplified the discovery backend** — dropped Cloudflare Browser Rendering + `@cloudflare/puppeteer` entirely. Discovery now uses the official **GitHub Code Search REST API** as its only backend. Same surface (`GET /api/discover?q=&repo=&limit=`), same response shape, but:
+  - No headless browser, no Vercel-challenge handling, no page.waitForResponse, no launch cost.
+  - Pages Function is now ~100 lines of straightforward `fetch` + KV cache.
+  - Sub-second latency, $0 compute at CF Workers' free tier.
+- `web/wrangler.toml` — removed `[browser]` binding. Only `DISCOVER_CACHE` KV and `GITHUB_TOKEN` secret remain.
+- `web/package.json` — removed `@cloudflare/puppeteer` devDependency.
+
+### Removed
+- `normalizeGrepApp` helper + associated fixture tests. grep.app integration can be re-added as a two-line branch if they ever publish an official API key program.
+
 ## [0.1.22] - 2026-04-19
 
 ### Added

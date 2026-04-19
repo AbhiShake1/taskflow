@@ -323,7 +323,7 @@ async function main(): Promise<void> {
     });
 
   cli.help();
-  cli.version('0.1.22');
+  cli.version('0.1.23');
   cli.parse();
 }
 
