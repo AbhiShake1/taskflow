@@ -24,8 +24,10 @@ export class EventBus {
       try { fn(ev); } catch { /* isolate subscriber errors */ }
     }
     if (this.stream) {
-      const line = JSON.stringify(ev) + '\n';
-      this.stream.write(line);
+      try {
+        const line = JSON.stringify(ev) + '\n';
+        this.stream.write(line);
+      } catch { /* isolate non-serializable event payloads */ }
     }
   }
 

@@ -56,6 +56,14 @@ describe('EventBus pub/sub', () => {
   });
 });
 
+describe('EventBus publish resilience', () => {
+  it('does not throw when event contains a non-serializable value', () => {
+    const bus = new EventBus();
+    const ev = { t: 'tool-res', leafId: 'l1', ts: 1, result: BigInt(1) } as unknown as RunEvent;
+    expect(() => bus.publish(ev)).not.toThrow();
+  });
+});
+
 describe('EventBus file sink', () => {
   it('writes one JSONL line per published event', async () => {
     const path = join(tmpdir(), `events-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
