@@ -317,9 +317,9 @@ const claudeCodeAdapter: AgentAdapter = {
           // streaming-input user messages and the underlying CLI subprocess never
           // exits — which hangs the leaf.
           if (msg && typeof msg === 'object' && msg.type === 'result') {
-            const u = extractUsage((msg as any).usage);
+            const u = extractUsage(msg.usage);
             if (u) lastUsage = u;
-            const sid = (msg as any).session_id;
+            const sid = msg.session_id;
             if (typeof sid === 'string' && sid.length > 0) lastSessionId = sid;
             input.close();
           }
@@ -499,7 +499,7 @@ type SdkContentBlock =
 type SdkMessage =
   | { type: 'assistant'; message?: { content?: SdkContentBlock[] }; error?: unknown }
   | { type: 'user'; message?: { content?: SdkContentBlock[] } }
-  | { type: 'result'; is_error?: boolean; errors?: string[]; subtype?: string };
+  | { type: 'result'; is_error?: boolean; errors?: string[]; subtype?: string; usage?: unknown; session_id?: unknown };
 
 /** Map one SDK message onto zero-or-more AgentEvents. */
 async function normalizeMessage(msg: SdkMessage, leafId: string, ch: EventChannel<AgentEvent>): Promise<void> {
