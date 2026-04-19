@@ -499,7 +499,7 @@ type SdkContentBlock =
 type SdkMessage =
   | { type: 'assistant'; message?: { content?: SdkContentBlock[] }; error?: unknown }
   | { type: 'user'; message?: { content?: SdkContentBlock[] } }
-  | { type: 'result'; is_error?: boolean; errors?: string[]; subtype?: string; usage?: unknown; session_id?: unknown };
+  | { type: 'result'; is_error?: boolean; errors?: string[]; subtype?: string; usage?: unknown; session_id?: string };
 
 /** Map one SDK message onto zero-or-more AgentEvents. */
 async function normalizeMessage(msg: SdkMessage, leafId: string, ch: EventChannel<AgentEvent>): Promise<void> {
@@ -599,7 +599,7 @@ function extractUsage(raw: unknown): LeafUsage | undefined {
  *
  * Typed as `unknown` in/out so this adapter has no zod dependency.
  */
-function extractZodShape(schema: unknown): Record<string, unknown> | null {
+export function extractZodShape(schema: unknown): Record<string, unknown> | null {
   if (!schema || typeof schema !== 'object') return null;
   const s = schema as Record<string, unknown>;
   // zod 3: ._def.shape() ; zod 4: ._def.shape ; both expose .shape on the instance.
