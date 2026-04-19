@@ -194,6 +194,19 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * Merges successive `before*` hook handler return values into a single object.
+ *
+ * Rules applied in order:
+ * 1. If `next` is `undefined`, `acc` is returned unchanged (handler opted out).
+ * 2. If either value is not a plain object, `next` wins outright (last-wins scalar).
+ * 3. For plain-object pairs, keys are merged shallowly — except when **both** the
+ *    accumulated value and the incoming value for a key are arrays, in which case the
+ *    arrays are **concatenated** rather than the later one replacing the earlier one.
+ *    This preserves contributions from every plugin that appends to a shared list
+ *    (e.g. `headers`, `tags`). Replacing with last-wins would silently discard earlier
+ *    plugins' additions in multi-plugin scenarios.
+ */
 function mergeBeforeReturns(acc: unknown, next: unknown): unknown {
   if (next === undefined) return acc;
   if (acc === undefined) return next;
