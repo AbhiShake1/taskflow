@@ -60,7 +60,7 @@
     "evolve": "tsx runner/index.ts harness/self-evolve.ts",
     "evolve:stitch": "tsx harness/stitch.ts",
     "test": "vitest run",
-    "test:real": "HARNESS_REAL_TESTS=1 vitest run",
+    "test:real": "HARNESS_REAL_TESTS=1 vitest run __tests__/real-*.test.ts",
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
