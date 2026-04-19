@@ -8,7 +8,6 @@ export type EventSubscriber = (ev: RunEvent) => void;
 export class EventBus {
   private subs = new Set<EventSubscriber>();
   private stream?: WriteStream;
-  private pendingWrites: Promise<void> = Promise.resolve();
 
   async attachFile(path: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
