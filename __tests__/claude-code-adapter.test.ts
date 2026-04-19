@@ -374,6 +374,28 @@ describe('claude-code adapter', () => {
     expect(last.result.status).toBe('error');
   });
 
+  it('emits an error event when an assistant message carries an inline error field', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'assistant',
+      error: 'context_window_exceeded',
+      message: { role: 'assistant', content: [] },
+      parent_tool_use_id: null,
+      uuid: 'u-err',
+      session_id: 's1',
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const errEv = events.find(e => e.t === 'error') as Extract<AgentEvent, { t: 'error' }> | undefined;
+    expect(errEv).toBeDefined();
+    expect(errEv!.error).toBe('context_window_exceeded');
+  });
+
   it('passes ctx.cwd to query() options', async () => {
     const { default: adapter } = await import('../adapters/claude-code');
     const handle = adapter.spawn(baseSpec, ctx);
@@ -486,5 +508,67 @@ describe('claude-code adapter', () => {
     expect(toolEv).toBeDefined();
     expect(toolEv!.name).toBe('Bash');
     expect(toolEv!.args).toEqual({ cmd: 'ls' });
+  });
+
+  it('maps user tool_result blocks into tool-res events using tool_use_id as name', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu_99',
+            content: 'exit 0',
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      uuid: 'u3',
+      session_id: 's1',
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const resEv = events.find(e => e.t === 'tool-res') as Extract<AgentEvent, { t: 'tool-res' }> | undefined;
+    expect(resEv).toBeDefined();
+    expect(resEv!.name).toBe('tu_99');
+    expect(resEv!.result).toBe('exit 0');
+  });
+
+  it('falls back to name="tool" when tool_result block has no tool_use_id', async () => {
+    const { default: adapter } = await import('../adapters/claude-code');
+    const handle = adapter.spawn(baseSpec, ctx);
+
+    mockState.sdk!.emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            // tool_use_id intentionally absent
+            content: 'some output',
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      uuid: 'u4',
+      session_id: 's1',
+    });
+    mockState.sdk!.end();
+
+    const events = await collect(handle.events);
+    await handle.wait();
+
+    const resEv = events.find(e => e.t === 'tool-res') as Extract<AgentEvent, { t: 'tool-res' }> | undefined;
+    expect(resEv).toBeDefined();
+    expect(resEv!.name).toBe('tool');
+    expect(resEv!.result).toBe('some output');
   });
 });
