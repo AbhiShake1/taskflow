@@ -178,6 +178,14 @@ describe('HookRegistry', () => {
     expect(r3).toBeUndefined();
   });
 
+  it('collectTodos: accumulates items from both string[] and { items } return shapes', async () => {
+    const reg = new HookRegistry();
+    reg.register('collectTodos', async () => ['a', 'b']);
+    reg.register('collectTodos', async () => ({ items: ['c', 'd'] }));
+    const result = await reg.fire('collectTodos', makeCtx(), { spec: sampleSpec });
+    expect(result).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('has(name): true after register, false otherwise', () => {
     const reg = new HookRegistry();
     expect(reg.has('beforePhase')).toBe(false);
